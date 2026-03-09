@@ -13,6 +13,7 @@ Layout (matches sketch):
 
 import glob
 import json
+import math
 import os
 from datetime import date
 
@@ -20,6 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle, Polygon
 
 import numpy as np
@@ -33,6 +35,285 @@ from shiny import App, render, ui, reactive
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 V3_PATH = os.path.join(APP_DIR, "data", "v3")
 STATIC_DIR = os.path.join(APP_DIR, "static")
+
+#Team name map
+TEAM_NAME_MAP = {
+    "UNI_KAN_SB": "University of Kansas",
+    "PUR_BOI_SB": "Purdue University",
+    "TEX_STA_SB": "Texas State University",
+    "UNI_IOW_SB": "University of Iowa",
+    "UNI_ARK_SB": "University of Arkansas",
+    "NEB_COR_SB": "University of Nebraska",
+    "BOS_COL_SB": "Boston College",
+    "CRE_UNI_SB": "Creighton University",
+    "IOW_STA_SB": "Iowa State University",
+    "STA_WOL_SB": "North Carolina State University",
+    "LOU_TEC_SB": "Louisiana Tech University",
+    "DUK_BLU_SB": "Duke University",
+    "UNI_UTA_SB": "University of Utah",
+    "ILL_FIG_SB": "University of Illinois",
+    "FLO_GAT_SB": "University of Florida",
+    "CAL_BAP_SB": "California Baptist University",
+    "BYU_COU_SB": "Brigham Young University",
+    "GEO_BUL_SB": "University of Georgia",
+    "NOR_GEO_SB": "University of North Georgia",
+    "ARI_WIL_SB": "University of Arizona",
+    "AUB_TIG_SB": "Auburn University",
+    "MIN_GOL_SB": "University of Minnesota",
+    "UNI_KEN_SB": "University of Kentucky",
+    "LON_BEA_SB": "Long Beach State University",
+    "LSU_TIG_SB": "Louisiana State University",
+    "CLE_TIG_SB": "Clemson University",
+    "OKL_SOO_SB": "University of Oklahoma",
+    "OKL_STA_SB": "Oklahoma State University",
+    "ORE_STA_SB": "Oregon State University",
+    "VIR_CAV_SB": "University of Virginia",
+    "TEX_TEC_SB": "Texas Tech University",
+    "SAN_DIE1_SB": "San Diego State University",
+    "SAN_DIE2_SB": "University of San Diego",
+    "UNI_TEN_SB": "University of Tennessee",
+    "STA_UNI_SB": "Stanford University",
+    "VIR_TEC_SB": "Virginia Tech",
+    "TEX_A&M_SB": "Texas A&M University",
+    "MEM_TIG_SB": "University of Memphis",
+    "IND_HOO_SB": "Indiana University",
+    "CHA_49E_SB": "University of North Carolina at Charlotte",
+    "OMA_MAV_SB": "University of Nebraska Omaha",
+    "WAS_HUS_SB": "University of Washington",
+    "TEX_LON_SB": "University of Texas",
+    "WIC_STA_SB": "Wichita State University",
+    "ABI_CHR_SB": "Abilene Christian University",
+    "AKR_ZIP_SB": "University of Akron",
+    "ALA_A&M_SB": "Alabama A&M University",
+    "ALA_CRI_SB": "University of Alabama",
+    "ALC_STA_SB": "Alcorn State University",
+    "AND_UNI_SB": "Anderson University",
+    "APP_STA_SB": "Appalachian State University",
+    "ARI_STA_SB": "Arizona State University",
+    "AUG_UNI_SB": "Augusta University",
+    "AUS_PEA_SB": "Austin Peay State University",
+    "BAL_STA_SB": "Ball State University",
+    "BAR_UNI_SB": "Barry University",
+    "BAY_BEA_SB": "Baylor University",
+    "BEL_UNI_SB": "Belhaven University",
+    "BEL_BEA_SB": "Belmont University",
+    "BET_COO_SB": "Bethune-Cookman University",
+    "BIN_UNI_SB": "Binghamton University",
+    "BOI_STA_SB": "Boise State University",
+    "BOS_UNI_SB": "Boston University",
+    "BRA_BRA_SB": "Bradley University",
+    "BRO_UNI_SB": "Brown University",
+    "BRY_UNI_SB": "Bryant University",
+    "BUC_UNI_SB": "Bucknell University",
+    "BUT_COM_SB": "Butler Community College",
+    "BUT_UNI_SB": "Butler University",
+    "CAL_POL_SB": "California Polytechnic State University",
+    "CAL_STA_SB": "California State University, Fullerton",
+    "CAL_GOL_SB": "University of California, Berkeley",
+    "CAL_STA1_SB": "California State University, Northridge",
+    "CAM_FIG_SB": "Campbell University",
+    "CAR_NEW_SB": "Carson-Newman University",
+    "CEN_ARK_SB": "University of Central Arkansas",
+    "CEN_MIC_SB": "Central Michigan University",
+    "CHI_COL_SB": "Chipola College",
+    "COA_CAR_SB": "Coastal Carolina University",
+    "COL_CHA_SB": "College of Charleston",
+    "COL_CHR_SB": "Colorado Christian University",
+    "COL_STA_SB": "Colorado State University",
+    "COP_COP_SB": "Copiah-Lincoln Community College",
+    "CSU_BAK_SB": "California State University, Bakersfield",
+    "DEP_BLU_SB": "DePaul University",
+    "DET_MER_SB": "University of Detroit Mercy",
+    "DRA_UNI_SB": "Drake University",
+    "EAS_CAR_SB": "East Carolina University",
+    "EAS_TEN_SB": "East Tennessee State University",
+    "EAS_TEX_SB": "East Texas A&M University",
+    "EAS_ILL_SB": "Eastern Illinois University",
+    "ELO_UNI_SB": "Elon University",
+    "EMB_RID_SB": "Embry-Riddle Aeronautical University",
+    "EMM_UNI_SB": "Emmanuel University",
+    "EMP_STA_SB": "Emporia State University",
+    "EVA_PUR_SB": "University of Evansville",
+    "FLA_UNI_SB": "Flagler College",
+    "FLO_ATL_SB": "Florida Atlantic University",
+    "FLO_GUL_SB": "Florida Gulf Coast University",
+    "FLO_INT_SB": "Florida International University",
+    "FLO_STA_SB": "Florida State University",
+    "FOR_UNI_SB": "Fordham University",
+    "FRE_STA_SB": "California State University, Fresno",
+    "FUR_PAL_SB": "Furman University",
+    "GAR_CIT_SB": "Garden City Community College",
+    "GAR_RUN_SB": "Gardner-Webb University",
+    "GEO_WAS1_SB": "George Washington University",
+    "GEO_HOY_SB": "Georgetown University",
+    "GEO_GWI_SB": "Georgia Gwinnett College",
+    "GEO_SOU_SB": "Georgia Southern University",
+    "GEO_STA_SB": "Georgia State University",
+    "GEO_TEC_SB": "Georgia Institute of Technology",
+    "GRA_CAN_SB": "Grand Canyon University",
+    "GRA_JUN_SB": "Grand Junction",
+    "GRA_JUN1_SB": "Grand Junction Central",
+    "GRE_BAY_SB": "University of Wisconsin-Green Bay",
+    "HAW_RAI_SB": "University of Hawaiʻi",
+    "HOW_UNI_SB": "Howard University",
+    "HUT_COM_SB": "Hutchinson Community College",
+    "IDA_STA_SB": "Idaho State University",
+    "ILL_STA_SB": "Illinois State University",
+    "INC_WOR_SB": "University of the Incarnate Word",
+    "IND_STA_SB": "Indiana State University",
+    "IND_UNI_SB": "Indiana University Indianapolis",
+    "JAC_STA_SB": "Jacksonville State University",
+    "JAC_UNI_SB": "Jacksonville University",
+    "JAM_MAD_SB": "James Madison University",
+    "JON_COL_SB": "Jones College",
+    "KEN_STA_SB": "Kennesaw State University",
+    "LAM_UNI_SB": "Lamar University",
+    "LEE_UNI_SB": "Lee University",
+    "LEH_UNI_SB": "Lehigh University",
+    "LIB_LAD_SB": "Liberty University",
+    "LIN_MEM_SB": "Lincoln Memorial University",
+    "LIN_LIO_SB": "Lindenwood University",
+    "LIP_LIP_SB": "Lipscomb University",
+    "LIU_SHA_SB": "Long Island University",
+    "LON_LAN_SB": "Longwood University",
+    "LOU_COL_SB": "Louisburg College",
+    "LOU_RAG_SB": "University of Louisiana",
+    "LOU_CAR_SB": "University of Louisville",
+    "LOY_CHI_SB": "Loyola University Chicago",
+    "LOY_MAR_SB": "Loyola Marymount University",
+    "MAR_UNI_SB": "Marist University",
+    "MAR_THU_SB": "Marshall University",
+    "MAR_TER_SB": "University of Maryland",
+    "MCL_COL_SB": "McLennan Community College",
+    "MCN_STA1_SB": "McNeese State University",
+    "MER_BEA_SB": "Mercer University",
+    "MET_STA_SB": "Metropolitan State University of Denver",
+    "MIA_(OH_SB": "Miami Ohio University",
+    "MIC_STA_SB": "Michigan State University",
+    "MIC_WOL_SB": "University of Michigan",
+    "MID_TEN_SB": "Middle Tennessee State University",
+    "MIS_STA_SB": "Mississippi State University",
+    "MIS_STA1_SB": "Missouri State University",
+    "MIS_TIG_SB": "University of Missouri",
+    "MON_GRI_SB": "University of Montana",
+    "MUR_STA_SB": "Murray State College",
+    "NEW_MEX1_SB": "University of New Mexico",
+    "NEW_MEX_SB": "New Mexico State University",
+    "NIC_STA_SB": "Nicholls State University",
+    "NOR_ALA_SB": "University of North Alabama",
+    "NOR_CAR2_SB": "North Carolina A&T State University",
+    "NOR_CAR1_SB": "North Carolina Central University",
+    "NOR_CAR_SB": "University of North Carolina",
+    "NOR_DAK1_SB": "University of North Dakota",
+    "NOR_DAK_SB": "North Dakota State University",
+    "NOR_ILL_SB": "Northern Illinois University",
+    "NOR_FLO_SB": "Northwest Florida State College",
+    "NOR_STA_SB": "Northwestern State University",
+    "NOR_WIL_SB": "Northwestern University",
+    "NOR_UNI_SB": "Northwood University",
+    "OHI_STA_SB": "Ohio State University",
+    "OKL_CHR_SB": "Oklahoma Christian University",
+    "OLE_MIS_SB": "University of Mississippi",
+    "ORE_DUC_SB": "University of Oregon",
+    "PEN_STA_SB": "Pennsylvania State University",
+    "PRA_VIE_SB": "Prairie View A&M University",
+    "PRE_BLU_SB": "Presbyterian College",
+    "PRI_UNI_SB": "Princeton University",
+    "PRO_FRI_SB": "Providence College",
+    "QUE_UNI_SB": "Queens University of Charlotte",
+    "RAD_UNI_SB": "Radford University",
+    "ROA_STA_SB": "Roane State Community College",
+    "RUT_RUT_SB": "Rutgers University",
+    "SAI_FRA_SB": "Saint Francis University",
+    "SAI_LEO_SB": "Saint Leo University",
+    "SAI_MAR_SB": "Saint Mary's College",
+    "SAL_LAK_SB": "Salt Lake Community College",
+    "SAM_HOU_SB": "Sam Houston State University",
+    "SAM_UNI_SB": "Samford University",
+    "SAN_JOS_SB": "San Jose State University",
+    "SAN_CLA_SB": "Santa Clara University",
+    "SEA_UNI_SB": "Seattle University",
+    "SEM_STA_SB": "Seminole State College",
+    "SET_HAL_SB": "Seton Hall University",
+    "SHO_UNI_SB": "Shorter University",
+    "SOU_ALA_SB": "University of South Alabama",
+    "SOU_CAR_SB": "University of South Carolina",
+    "SOU_DAK_SB": "South Dakota State University",
+    "SOU_FLO_SB": "University of South Florida",
+    "SOU_MIS1_SB": "Southeast Missouri State University",
+    "SOU_LOU_SB": "Southeastern Louisiana University",
+    "SOU_ILL_SB": "Southern Illinois University Edwardsville",
+    "SOU_ILL1_SB": "Southern Illinois University",
+    "SOU_IND_SB": "University of Southern Indiana",
+    "SOU_MIS_SB": "University of Southern Mississippi",
+    "SOU_NAZ_SB": "Southern Nazarene University",
+    "SOU_UNI_SB": "Southern University",
+    "SOU_UTA_SB": "Southern Utah University",
+    "ST._BON_SB": "St. Bonaventure University",
+    "STE_AUS_SB": "Stephen F. Austin State University",
+    "STE_HAT_SB": "Stetson University",
+    "SYR_ORA_SB": "Syracuse University",
+    "TEM_COL_SB": "Temple College",
+    "TEN_TEC_SB": "Tennessee Tech University",
+    "TEX_A&M2_SB": "Texas A&M University-Corpus Christi",
+    "TRO_TRO_SB": "Troy University",
+    "TUL_GOL_SB": "University of Tulsa",
+    "TUS_UNI_SB": "Tusculum University",
+    "RIV_RIV_SB": "University of California, Riverside",
+    "SAN_DIE_SB": "University of California, San Diego",
+    "SAN_BAR_SB": "University of California, Santa Barbara",
+    "UCF_KNI_SB": "University of Central Florida",
+    "UCL_BRU_SB": "University of California, Los Angeles",
+    "UCO_HUS_SB": "University of Connecticut",
+    "UIC_UIC_SB": "University of Illinois Chicago",
+    "UNC_WIL_SB": "University of North Carolina Wilmington",
+    "UNI_ALA_SB": "University of Alabama at Birmingham",
+    "UNI_DEL_SB": "University of Delaware",
+    "UNI_HOU_SB": "University of Houston",
+    "UNI_LOU_SB": "University of Louisiana Monroe",
+    "UNI_MAS_SB": "University of Massachusetts",
+    "UNI_MIS_SB": "University of Missouri-Kansas City",
+    "UNI_NEV_SB": "University of Nevada",
+    "UNI_NOR2_SB": "University of North Florida",
+    "UNI_NOR1_SB": "University of North Texas",
+    "UNI_NOT_SB": "University of Notre Dame",
+    "UNI_SAN_SB": "University of San Diego",
+    "UNI_SOU_SB": "University of South Dakota",
+    "UNI_ST.2_SB": "University of St. Thomas",
+    "UNI_TEX1_SB": "University of Texas at El Paso",
+    "UNI_TEX2_SB": "University of Texas at San Antonio",
+    "UNI_TOL_SB": "University of Toledo",
+    "UNI_WES_SB": "University of West Georgia",
+    "UNL_UNL_SB": "University of Nevada, Las Vegas",
+    "USC_AIK_SB": "University of South Carolina Aiken",
+    "USC_BEA_SB": "University of South Carolina Beaufort",
+    "USC_UPS_SB": "University of South Carolina Upstate",
+    "ARL_MAV_SB": "University of Texas at Arlington",
+    "UTA_STA_SB": "Utah State University",
+    "UTA_TEC_SB": "Utah Tech University",
+    "UTA_VAL_SB": "Utah Valley University",
+    "VAL_STA_SB": "Valdosta State University",
+    "VAL_VAL_SB": "Valparaiso University",
+    "VIL_WIL_SB": "Villanova University",
+    "WAL_STA1_SB": "Wallace State Community College",
+    "WAL_STA_SB": "Walters State Community College",
+    "WEB_STA_SB": "Weber State University",
+    "WES_CAR_SB": "Western Carolina University",
+    "WES_NEB_SB": "Western Nebraska Community College",
+    "WIN_EAG_SB": "Winthrop University",
+    "WIS_BAD_SB": "University of Wisconsin",
+    "WOF_TER_SB": "Wofford College",
+    "YAL_BUL_SB": "Yale University",
+    "DEL_STA_SB": "Delaware State University",
+    "ALA_STA_SB": "Alabama State University",
+    "DAY_FLY_SB": "University of Dayton",
+    "MUR_STA1_SB": "Murray State University",
+    "OAK_GOL_SB": "Oakland University",
+    "TAR_STA_SB": "Tarleton State University",
+    "UNI_PIT_SB": "University of Pittsburgh",
+    
+}
+
 
 # Put your Purdue logo image inside app/static/
 # Example file name:
@@ -64,6 +345,7 @@ MOV_XLIM = (-20, 20)
 MOV_YLIM = (-20, 20)
 
 # Purdue detection (robust: does not require exact team string)
+
 PURDUE_CODE = "PUR_BOI_SB"
 
 def is_purdue_team(team_value: str) -> bool:
@@ -427,12 +709,138 @@ def throws_to_short(throws: str) -> str:
     return str(throws).strip()
 
 
+def format_num(x, digits=1):
+    if pd.isna(x):
+        return "—"
+    return f"{x:.{digits}f}"
+
+def format_pct(x, digits=1):
+    if pd.isna(x):
+        return "—"
+    return f"{x * 100:.{digits}f}%"
+
+def filter_df_to_pitch_type(df: pd.DataFrame, pitch_type_value: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if pitch_type_value in (None, "", "all"):
+        return df
+    return df[df[PITCH_TYPE_COL].astype(str).str.strip() == str(pitch_type_value)].copy()
+
+def compute_comparison_metrics(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {
+            "pitch_count": 0,
+            "avg_velo": np.nan,
+            "max_velo": np.nan,
+            "velo_sd": np.nan,
+            "spin_rate": np.nan,
+            "spin_sd": np.nan,
+            "ivb_avg": np.nan,
+            "ivb_sd": np.nan,
+            "hb_avg": np.nan,
+            "hb_sd": np.nan,
+            "strike_pct": np.nan,
+            "whiff_pct": np.nan,
+            "chase_pct": np.nan,
+        }
+
+    d = df.copy()
+
+    for c in ["RelSpeed", "SpinRate", "InducedVertBreak", "HorzBreak", "PlateLocSide", "PlateLocHeight"]:
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+
+    pc = d["PitchCall"].astype(str).str.strip() if "PitchCall" in d.columns else pd.Series("", index=d.index)
+
+    STRIKE_EVENTS = {
+        "StrikeCalled", "StrikeSwinging",
+        "FoulBallFieldable", "FoulBallNotFieldable",
+        "InPlay"
+    }
+    SWING_EVENTS = {
+        "StrikeSwinging",
+        "FoulBallFieldable", "FoulBallNotFieldable",
+        "InPlay"
+    }
+
+    d["is_strike"] = pc.isin(STRIKE_EVENTS)
+    d["is_swing"] = pc.isin(SWING_EVENTS)
+    d["is_whiff"] = pc.eq("StrikeSwinging")
+
+    d["is_outside"] = (
+        (d["PlateLocSide"] < ZONE_LEFT) |
+        (d["PlateLocSide"] > ZONE_RIGHT) |
+        (d["PlateLocHeight"] < ZONE_BOTTOM) |
+        (d["PlateLocHeight"] > ZONE_TOP)
+    )
+    d["is_chase"] = d["is_outside"] & d["is_swing"]
+
+    swings = d["is_swing"].sum()
+    outside = d["is_outside"].sum()
+
+    return {
+        "pitch_count": int(len(d)),
+        "avg_velo": d["RelSpeed"].mean(),
+        "max_velo": d["RelSpeed"].max(),
+        "velo_sd": d["RelSpeed"].std(),
+        "spin_rate": d["SpinRate"].mean(),
+        "spin_sd": d["SpinRate"].std(),
+        "ivb_avg": d["InducedVertBreak"].mean(),
+        "ivb_sd": d["InducedVertBreak"].std(),
+        "hb_avg": d["HorzBreak"].mean(),
+        "hb_sd": d["HorzBreak"].std(),
+        "strike_pct": d["is_strike"].mean(),
+        "whiff_pct": (d["is_whiff"].sum() / swings) if swings > 0 else np.nan,
+        "chase_pct": (d["is_chase"].sum() / outside) if outside > 0 else np.nan,
+    }
+
+
+def get_pitcher_team_logo_text(team_code: str) -> str:
+    if team_code == PURDUE_CODE:
+        return "P"
+    return "O"
+
 # ---------------------------------------------------------------------------
 # Load csv metadata once
 # ---------------------------------------------------------------------------
 csv_paths_with_dates, global_date_min, global_date_max = get_csv_paths_with_dates()
-_date_start_value = global_date_min if global_date_min else None
-_date_end_value = global_date_max if global_date_max else None
+
+DEFAULT_SEASON = "spring_2026"
+
+SEASON_DATE_MAP = {
+    "spring_2026": (date(2026, 1, 1), date(2026, 6, 30)),
+}
+
+def clamp_date_range(start, end, global_min, global_max):
+    if global_min is None or global_max is None:
+        return None, None
+
+    start = max(start, global_min)
+    end = min(end, global_max)
+
+    if start > end:
+        return None, None
+
+    return start, end
+
+def get_initial_date_range(default_season):
+    if global_date_min is None or global_date_max is None:
+        return None, None
+
+    if default_season == "all":
+        return global_date_min, global_date_max
+
+    season_start, season_end = SEASON_DATE_MAP.get(
+        default_season, (global_date_min, global_date_max)
+    )
+    start, end = clamp_date_range(season_start, season_end, global_date_min, global_date_max)
+
+    if start is None or end is None:
+        return None, None
+
+    return start, end
+
+_date_start_value, _date_end_value = get_initial_date_range(DEFAULT_SEASON)
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +1105,286 @@ app_ui = ui.page_fluid(
             margin: 6px 0 10px 0;
             text-align: center;
         }
+
+        /* ---------------- Comparison tab ---------------- */
+        .cmp-filter-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+            align-items: end;
+            max-width: 1500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .cmp-filter-row .shiny-input-container {
+            margin-bottom: 0 !important;
+        }
+
+        .cmp-filter-row .shiny-input-container > label {
+            margin-bottom: 6 px;
+            font-weight: 800;
+        }
+
+        .cmp-vs-title {
+            font-size: 26px;
+            font-weight: 900;
+            text-align: center;
+            margin: 6px 0 16px 0;
+            color: #222222;
+        }
+
+        .cmp-summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+
+        .cmp-card {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 12px;
+            padding: 16px 18px;
+        }
+
+        .cmp-card-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .cmp-card-logo {
+            width: 54px;
+            height: 54px;
+            min-width: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            background: #f7f7f7;
+            border: 1px solid #ececec;
+            font-size: 24px;
+            font-weight: 900;
+            color: #DDB945;
+        }
+
+        .cmp-card-name {
+            font-size: 18px;
+            font-weight: 900;
+            margin: 0;
+            color: #222222;
+        }
+
+        .cmp-card-subtitle {
+            font-size: 13px;
+            color: #666666;
+            margin-top: 2px;
+        }
+
+        .cmp-chip-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 10px 0 14px 0;
+        }
+
+        .cmp-chip {
+            background: #f3f3f3;
+            border: 1px solid #e0e0e0;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #333333;
+        }
+
+        .cmp-stat-strip {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            gap: 0;
+            background: #f7f7f7;
+            border: 1px solid #e1e1e1;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .cmp-stat-box {
+            padding: 12px 10px;
+            text-align: center;
+            border-right: 1px solid #e1e1e1;
+        }
+
+        .cmp-stat-box:last-child {
+            border-right: none;
+        }
+
+        .cmp-stat-label {
+            font-size: 13px;
+            color: #666666;
+            margin-bottom: 6 px;
+            font-weight: 700;
+        }
+
+        .cmp-stat-value {
+            font-size: 18px;
+            font-weight: 900;
+            color: #222222;
+        }
+
+        .cmp-table-card {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 14px;
+        }
+
+        .cmp-grid-bottom {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .cmp-plot-card {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 12px;
+            padding: 10px;
+        }
+
+        .cmp-section-title {
+            font-size: 16px;
+            font-weight: 900;
+            color: #222222;
+            margin: 0 0 10px 4px;
+            letter-spacing: 0.2px;
+        }
+
+        .cmp-table-wrap table,
+        .cmp-table-wrap thead,
+        .cmp-table-wrap tbody,
+        .cmp-table-wrap tr,
+        .cmp-table-wrap th,
+        .cmp-table-wrap td,
+        .cmp-table-wrap table.table,
+        .cmp-table-wrap .table,
+        .cmp-table-wrap .table > :not(caption) > * > * {
+            background-color: transparent !important;
+        }
+
+        .cmp-table-wrap table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
+        }
+
+        .cmp-table-wrap table.table thead th,
+        .cmp-table-wrap .table thead th {
+            background: #111 !important;
+            color: #fff !important;
+            font-weight: 800 !important;
+            border: 1px solid #444 !important;
+            border-bottom: 2px solid #444 !important;
+            text-align: center !important;
+            white-space: normal !important;
+            line-height: 1.2 !important;
+        }
+
+        .cmp-table-wrap tbody td {
+            border: 1px solid #cfcfcf !important;
+            color: #111 !important;
+            font-size: 13px !important;
+            padding: 8px 8px !important;
+        }
+
+        .cmp-table-wrap tbody tr:nth-child(odd) td {
+            background: #f7f7f7 !important;
+        }
+
+        .cmp-table-wrap tbody tr:nth-child(even) td {
+            background: #ffffff !important;
+        }
+
+        .cmp-table-wrap th:nth-child(1),
+        .cmp-table-wrap td:nth-child(1) {
+            text-align: left !important;
+            width: 34%;
+        }
+
+        .cmp-table-wrap th:nth-child(2),
+        .cmp-table-wrap td:nth-child(2),
+        .cmp-table-wrap th:nth-child(3),
+        .cmp-table-wrap td:nth-child(3) {
+            text-align: center !important;
+            width: 33%;
+        }
+
+        /* ---------------- Team summary table ---------------- */
+        .team-summary-wrap{
+            margin-top: 14px;
+            margin-bottom: 18px;
+            background: #ffffff;
+            border: 1px solid #d9d9d9;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .team-summary-title{
+            font-size: 20px;
+            font-weight: 700;
+            text-align: center;
+            padding: 10px 12px;
+            background: #f7f7f7;
+            border-bottom: 1px solid #d9d9d9;
+            color: #111111;
+        }
+
+        .team-summary-table{
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .team-summary-table th,
+        .team-summary-table td{
+            border: 1px solid #d9d9d9;
+            padding: 10px 12px;
+            text-align: center;
+            font-size: 16px;
+            background: #ffffff;
+            color: #111111;
+        }
+
+        .team-summary-table th{
+            font-weight: 700;
+            background: #f3f3f3;
+            white-space: nowrap;
+        }
+
+        .team-summary-table th:first-child,
+        .team-summary-table td:first-child{
+            text-align: left;
+            font-weight: 700;
+            width: 140px;
+        }
+
+        .team-summary-table th:nth-child(2){width: 140px;}
+        .team-summary-table th:nth-child(3){width: 140px;}
+        .team-summary-table th:nth-child(4){width: 140px;}
+        .team-summary-table th:nth-child(5){width: 230px;}
+        .team-summary-table th:nth-child(6){width: 150px;}
+        .team-summary-table th:nth-child(7){width: 210px;}
+
+        .team-summary-purdue{
+            background: #f8f5e6 !important;
+        }
+
+        .team-summary-opponent{
+            background: #f8f8f8 !important;
+        }
     """),
 
     # Purdue header (logo left, title centered)
@@ -713,6 +1401,20 @@ app_ui = ui.page_fluid(
     ui.tags.div(
         ui.tags.div(
             ui.tags.h4("Filters"),
+            ui.tags.div(
+                ui.tags.div("Season", class_="filter-title", style="margin-bottom: 6px;"),
+                ui.input_select(
+                    "season_choice",
+                    "",
+                    choices={
+                        "spring_2026": "Spring 2026",
+                        "all": "All Data",
+                        "custom": "Custom Date Range",
+                    },
+                    
+                    selected=DEFAULT_SEASON,
+                ),
+            ),
 
             ui.tags.div(
                 ui.tags.div("Date Range", class_="filter-title", style="margin-bottom: 6px;"),
@@ -771,19 +1473,144 @@ app_ui = ui.page_fluid(
 # ---------------------------------------------------------------------------
 def server(input, output, session):
 
+    updating_dates_from_season = reactive.Value(False)
+
     @reactive.calc
     def date_range_invalid():
         start, end = input.date_start(), input.date_end()
         return start is not None and end is not None and start > end
 
+    @reactive.calc
+    def selected_range_has_data():
+        start = input.date_start()
+        end = input.date_end()
+
+        if start is None or end is None or not csv_paths_with_dates:
+            return False
+        if start > end:
+            return False
+
+        for _, _, dmin, dmax in csv_paths_with_dates:
+            if dmin <= end and dmax >= start:
+                return True
+        return False
+
+    @reactive.effect
+    def _update_dates_from_season():
+        season = input.season_choice()
+
+        if global_date_min is None or global_date_max is None:
+            return
+
+        if season == "custom":
+            return
+
+        if season == "all":
+            start, end = global_date_min, global_date_max
+        else:
+            season_start, season_end = SEASON_DATE_MAP.get(
+                season, (global_date_min, global_date_max)
+            )
+            start, end = clamp_date_range(
+                season_start, season_end, global_date_min, global_date_max
+            )
+
+        updating_dates_from_season.set(True)
+
+        if start is None or end is None:
+            ui.notification_show(
+                f"No data found for {season.replace('_', ' ').title()}.",
+                type="warning",
+                duration=3,
+            )
+        else:
+            ui.update_date("date_start", value=start, session=session)
+            ui.update_date("date_end", value=end, session=session)
+
+        updating_dates_from_season.set(False)
+
     @reactive.effect
     def _update_date_bounds():
         start = input.date_start()
         end = input.date_end()
+
+        if updating_dates_from_season.get():
+            return
+
+        if global_date_min is None or global_date_max is None:
+            return
         if start is None or end is None:
             return
-        ui.update_date("date_end", min=start, max=global_date_max or end, session=session)
-        ui.update_date("date_start", min=global_date_min or start, max=end, session=session)
+
+        ui.update_date(
+            "date_start",
+            min=global_date_min,
+            max=end,
+            session=session,
+        )
+        ui.update_date(
+            "date_end",
+            min=start,
+            max=global_date_max,
+            session=session,
+        )
+
+    @reactive.effect
+    def _switch_season_to_custom_on_manual_date_edit():
+        start = input.date_start()
+        end = input.date_end()
+        season = input.season_choice()
+
+        if start is None or end is None:
+            return
+
+        if updating_dates_from_season.get():
+            return
+
+        if season == "custom":
+            return
+
+        if season == "all":
+            expected_start, expected_end = global_date_min, global_date_max
+        else:
+            season_start, season_end = SEASON_DATE_MAP.get(
+                season, (global_date_min, global_date_max)
+            )
+            expected_start, expected_end = clamp_date_range(
+                season_start, season_end, global_date_min, global_date_max
+            )
+
+        if expected_start is None or expected_end is None:
+            return
+
+        if start != expected_start or end != expected_end:
+            ui.update_select("season_choice", selected="custom", session=session)
+
+
+    @reactive.effect
+    def _notify_no_data_for_selected_range():
+        season = input.season_choice()
+        start = input.date_start()
+        end = input.date_end()
+
+        if start is None or end is None:
+            return
+        if date_range_invalid():
+            return
+        if selected_range_has_data():
+            return
+
+        msg = (
+            f"No data found for {season.replace('_', ' ').title()}."
+            if season not in ("all", "custom")
+            else "No data found for the selected date range."
+        )
+
+        ui.notification_show(
+            msg,
+            type="warning",
+            duration=3,
+        )
 
     @reactive.calc
     def current_df():
@@ -842,7 +1669,8 @@ def server(input, output, session):
                 teams.update([v for v in vals if v])
 
         teams = sorted(list(teams))
-        choices = {t: ("Purdue University" if t == PURDUE_CODE else t) for t in teams}
+        choices = {t: TEAM_NAME_MAP.get(t, t) for t in teams}
+        choices = dict(sorted(choices.items(), key=lambda x: x[1]))
         default_team = PURDUE_CODE if PURDUE_CODE in teams else (teams[0] if teams else None)
         ui.update_select("team", choices=choices, selected=default_team, session=session)
 
@@ -959,6 +1787,647 @@ def server(input, output, session):
         return f"{name} {n_pitches} pitches"
 
 
+    # -----------------------------------------------------------------------
+    # Comparison tab reactives
+    # -----------------------------------------------------------------------
+    @reactive.effect
+    def _update_cmp_opponent_teams():
+        df = current_df()
+        if df is None or df.empty or "PitcherTeam" not in df.columns:
+            ui.update_select("cmp_opponent_team", choices={}, session=session)
+            return
+
+        teams = sorted([
+            t for t in df["PitcherTeam"].dropna().astype(str).str.strip().unique().tolist()
+            if t and t != PURDUE_CODE
+        ])
+
+        choices = {t: TEAM_NAME_MAP.get(t, t) for t in teams}
+        choices = dict(sorted(choices.items(), key=lambda x: x[1]))
+
+        ui.update_select(
+            "cmp_opponent_team",
+            choices=choices,
+            selected=list(choices.keys())[0] if choices else None,
+            session=session,
+        )
+
+        
+    @reactive.effect
+    def _update_cmp_opponent_pitchers():
+        df = current_df()
+        opp_team = input.cmp_opponent_team()
+
+        if df is None or df.empty or not opp_team:
+            ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            return
+
+        d = df[df["PitcherTeam"].astype(str).str.strip() == str(opp_team)].copy()
+
+        if d.empty or "PitcherId" not in d.columns or "Pitcher" not in d.columns:
+            ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            return
+
+        lookup = (
+            d[["PitcherId", "Pitcher"]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values(["Pitcher", "PitcherId"])
+        )
+
+        choices = {
+            str(r.PitcherId): (format_display_name(r.Pitcher) or str(r.PitcherId))
+            for r in lookup.itertuples(index=False)
+        }
+
+        ui.update_select(
+            "cmp_opponent_pitcher",
+            choices=choices,
+            selected=list(choices.keys())[0] if choices else None,
+            session=session,
+        )
+
+
+    @reactive.calc
+    def cmp_purdue_df():
+        df = current_df()
+        pid = input.player()
+
+        if df is None or df.empty or not pid:
+            return pd.DataFrame()
+
+        d = df[
+            (df["PitcherTeam"].astype(str).str.strip() == PURDUE_CODE) &
+            (df["PitcherId"].astype(str) == str(pid))
+        ].copy()
+
+        d = apply_session_filter_for_team(d, PURDUE_CODE, input.session_type())
+        return d
+
+    @reactive.calc
+    def cmp_opponent_df():
+        df = current_df()
+        opp_team = input.cmp_opponent_team()
+        opp_pid = input.cmp_opponent_pitcher()
+
+        if df is None or df.empty or not opp_team or not opp_pid:
+            return pd.DataFrame()
+
+        d = df[
+            (df["PitcherTeam"].astype(str).str.strip() == str(opp_team)) &
+            (df["PitcherId"].astype(str) == str(opp_pid))
+        ].copy()
+        return d
+
+    
+
+    @reactive.effect
+    def _update_cmp_pitch_type_choices():
+        pur = cmp_purdue_df()
+        opp = cmp_opponent_df()
+
+        if pur is None or pur.empty or opp is None or opp.empty:
+            ui.update_select(
+                "cmp_pitch_type",
+                choices={"all": "All Pitches"},
+                selected="all",
+                session=session,
+            )
+            return
+
+        pur_types = set(
+            pur[PITCH_TYPE_COL].dropna().astype(str).str.strip().tolist()
+        ) if PITCH_TYPE_COL in pur.columns else set()
+
+        opp_types = set(
+            opp[PITCH_TYPE_COL].dropna().astype(str).str.strip().tolist()
+        ) if PITCH_TYPE_COL in opp.columns else set()
+
+        shared = sorted([pt for pt in (pur_types & opp_types) if pt])
+
+        choices = {"all": "All Pitches"}
+        for pt in shared:
+            choices[pt] = pt
+
+        selected = input.cmp_pitch_type()
+        if selected not in choices:
+            selected = "all"
+
+        ui.update_select(
+            "cmp_pitch_type",
+            choices=choices,
+            selected=selected,
+            session=session,
+        )
+
+    @reactive.calc
+    def cmp_purdue_filtered():
+        return filter_df_to_pitch_type(cmp_purdue_df(), input.cmp_pitch_type())
+
+    @reactive.calc
+    def cmp_opponent_filtered():
+        return filter_df_to_pitch_type(cmp_opponent_df(), input.cmp_pitch_type())
+
+    @reactive.calc
+    def cmp_purdue_name():
+        d = cmp_purdue_df()
+        if d is None or d.empty:
+            return "Purdue Pitcher"
+        return format_display_name(d["Pitcher"].iloc[0]) or "Purdue Pitcher"
+
+    @reactive.calc
+    def cmp_opponent_name():
+        d = cmp_opponent_df()
+        if d is None or d.empty:
+            return "Opponent Pitcher"
+        return format_display_name(d["Pitcher"].iloc[0]) or "Opponent Pitcher"
+
+    @reactive.calc
+    def cmp_pitch_type_label():
+        val = input.cmp_pitch_type()
+        return "All Pitches" if val in (None, "", "all") else str(val)
+
+
+    @output
+    @render.ui
+    def cmp_summary_cards():
+        pur = cmp_purdue_filtered()
+        opp = cmp_opponent_filtered()
+
+        if pur is None or pur.empty or opp is None or opp.empty:
+            return ui.div("No comparison data available for the selected filters.")
+
+        pur_all = cmp_purdue_df()
+        opp_all = cmp_opponent_df()
+
+        pur_hand = throws_to_short(pur_all["PitcherThrows"].iloc[0]) if "PitcherThrows" in pur_all.columns and not pur_all.empty else ""
+        opp_hand = throws_to_short(opp_all["PitcherThrows"].iloc[0]) if "PitcherThrows" in opp_all.columns and not opp_all.empty else ""
+
+        pur_metrics = compute_comparison_metrics(pur)
+        opp_metrics = compute_comparison_metrics(opp)
+
+        pitch_label = cmp_pitch_type_label()
+
+        pur_card = ui.div(
+            ui.div(
+                ui.div(get_pitcher_team_logo_text(PURDUE_CODE), class_="cmp-card-logo"),
+                ui.div(
+                    ui.div(cmp_purdue_name(), class_="cmp-card-name"),
+                    ui.div(f"{pur_hand} Pitcher" if pur_hand else "Pitcher", class_="cmp-card-subtitle"),
+                ),
+                class_="cmp-card-header",
+            ),
+            ui.div(
+                ui.div(pitch_label, class_="cmp-chip"),
+                ui.div(f"Pitch Count: {pur_metrics['pitch_count']}", class_="cmp-chip"),
+                class_="cmp-chip-row",
+            ),
+            ui.div(
+                ui.div(
+                    ui.div("Avg Velo", class_="cmp-stat-label"),
+                    ui.div(format_num(pur_metrics["avg_velo"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+                ui.div(
+                    ui.div("Max Velo", class_="cmp-stat-label"),
+                    ui.div(format_num(pur_metrics["max_velo"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+                
+                ui.div(
+                    ui.div("Strike %", class_="cmp-stat-label"),
+                    ui.div(format_pct(pur_metrics["strike_pct"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+                ui.div(
+                    ui.div("Whiff %", class_="cmp-stat-label"),
+                    ui.div(format_pct(pur_metrics["whiff_pct"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+                class_="cmp-stat-strip",
+            ),
+            class_="cmp-card",
+        )
+
+        opp_team = input.cmp_opponent_team()
+        opp_card = ui.div(
+            ui.div(
+                ui.div(get_pitcher_team_logo_text(opp_team), class_="cmp-card-logo"),
+                ui.div(
+                    ui.div(cmp_opponent_name(), class_="cmp-card-name"),
+                    ui.div(f"{opp_hand} Pitcher" if opp_hand else "Pitcher", class_="cmp-card-subtitle"),
+                ),
+                class_="cmp-card-header",
+            ),
+            ui.div(
+                ui.div(pitch_label, class_="cmp-chip"),
+                ui.div(f"Pitch Count: {opp_metrics['pitch_count']}", class_="cmp-chip"),
+                class_="cmp-chip-row",
+            ),
+            ui.div(
+                ui.div(
+                    ui.div("Avg Velo", class_="cmp-stat-label"),
+                    ui.div(format_num(opp_metrics["avg_velo"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+
+                ui.div(
+                    ui.div("Max Velo", class_="cmp-stat-label"),
+                    ui.div(format_num(opp_metrics["max_velo"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+
+                ui.div(
+                    ui.div("Strike %", class_="cmp-stat-label"),
+                    ui.div(format_pct(opp_metrics["strike_pct"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+                ui.div(
+                    ui.div("Whiff %", class_="cmp-stat-label"),
+                    ui.div(format_pct(opp_metrics["whiff_pct"]), class_="cmp-stat-value"),
+                    class_="cmp-stat-box",
+                ),
+                class_="cmp-stat-strip",
+            ),
+            class_="cmp-card",
+        )
+
+        return ui.div(
+            pur_card,
+            opp_card,
+            class_="cmp-summary-grid",
+        )
+
+    @output
+    @render.table
+    def cmp_table():
+        pur = cmp_purdue_filtered()
+        opp = cmp_opponent_filtered()
+
+        if pur is None or pur.empty or opp is None or opp.empty:
+            return pd.DataFrame(columns=["Metric", "Purdue", "Opponent"])
+
+        pm = compute_comparison_metrics(pur)
+        om = compute_comparison_metrics(opp)
+
+        pur_col = f"Purdue\n"
+        opp_col = f"Opponent\n"
+
+        table = pd.DataFrame({
+            "Metric": [
+                "Velocity STDEV",
+                "Spin Rate (RPM)",
+                "IVB Avg (in)",
+                "HB Avg (in)",
+                "Chase %",
+            ],
+            pur_col: [
+                format_num(pm["velo_sd"]),
+                format_num(pm["spin_rate"], 0),
+                format_num(pm["ivb_avg"]),
+                format_num(pm["hb_avg"]),
+                format_pct(pm["chase_pct"]),
+            ],
+            opp_col: [
+                format_num(om["velo_sd"]),
+                format_num(om["spin_rate"], 0),
+                format_num(om["ivb_avg"]),
+                format_num(om["hb_avg"]),
+                format_pct(om["chase_pct"]),
+            ],
+        })
+
+        return table
+
+    @output
+    @render.plot
+    def cmp_movement():
+        pur = cmp_purdue_filtered()
+        opp = cmp_opponent_filtered()
+
+        fig, ax = plt.subplots(figsize=(10.5, 4.2))
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+
+        if pur is None or pur.empty or opp is None or opp.empty:
+            ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            return fig
+
+        pur_mov = pur[pur[X_MOV].notna() & pur[Y_MOV].notna()].copy()
+        opp_mov = opp[opp[X_MOV].notna() & opp[Y_MOV].notna()].copy()
+
+        if pur_mov.empty and opp_mov.empty:
+            ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            return fig
+
+        if not pur_mov.empty:
+            ax.scatter(
+                pur_mov[X_MOV], pur_mov[Y_MOV],
+                s=18, alpha=0.75, color="#DDB945", label="Purdue"
+            )
+
+        if not opp_mov.empty:
+            ax.scatter(
+                opp_mov[X_MOV], opp_mov[Y_MOV],
+                s=18, alpha=0.55, color="#9E9E9E", label="Opponent"
+            )
+
+        ax.axhline(0, linewidth=1, color="#777777")
+        ax.axvline(0, linewidth=1, color="#777777")
+        # set axis range
+        ax.set_xlim(-20, 20)
+        ax.set_ylim(-20, 20)
+        ax.set_aspect("equal", adjustable = "box")
+        ax.set_xlabel("Horizontal Break (in)")
+        ax.set_ylabel("Induced Vertical Break (in)")
+        ax.grid(True, alpha=0.2)
+        ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.02,1), borderaxespad=0)
+        ax.set_title(cmp_pitch_type_label(), fontsize=13, fontweight="bold", loc ="center")
+        return fig
+
+    @output
+    @render.plot
+    def cmp_location():
+        pur = cmp_purdue_filtered()
+        opp = cmp_opponent_filtered()
+
+        fig, axes = plt.subplots(1, 2, figsize=(9.5, 4.4))
+        fig.patch.set_facecolor("#f7f7f7")
+
+        titles = ["Purdue", "Opponent"]
+        data_list = [pur, opp]
+        colors = ["#DDB945", "#9E9E9E"]
+
+        for ax, title, d, c in zip(axes, titles, data_list, colors):
+            ax.set_facecolor("#f7f7f7")
+
+            if d is None or d.empty:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                ax.set_axis_off()
+                continue
+
+            loc = d[
+                d["PlateLocSide"].notna() &
+                d["PlateLocHeight"].notna()
+            ].copy()
+
+            if loc.empty:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                ax.set_axis_off()
+                continue
+
+            # outer light zone (same as home chart)
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
+                (ZONE_RIGHT - ZONE_LEFT) + 0.6,
+                (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+                alpha=0.25,
+                facecolor="#d9d9d9",
+                edgecolor="none"
+            ))
+
+            # blue attack zone (same visual size as home chart)
+            ax.add_patch(Rectangle(
+                (-1.1, 1.2),
+                2.2,
+                2.6,
+                alpha=0.28,
+                facecolor="#8fb7d6",
+                edgecolor="none"
+            ))
+
+            # strike zone
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT, ZONE_BOTTOM),
+                ZONE_RIGHT - ZONE_LEFT,
+                ZONE_TOP - ZONE_BOTTOM,
+                fill=False,
+                linewidth=2.4,
+                edgecolor="black"
+            ))
+
+            # center reference lines (same colors as home)
+            ax.plot(
+                [ZONE_LEFT, ZONE_RIGHT],
+                [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2,
+                linestyle="--",
+                linewidth=1.4,
+                color="#1f77b4"
+            )
+
+            ax.plot(
+                [0, 0],
+                [ZONE_BOTTOM, ZONE_TOP],
+                linestyle="--",
+                linewidth=1.4,
+                color="#ff7f0e"
+            )
+
+            ax.scatter(
+                loc["PlateLocSide"],
+                loc["PlateLocHeight"],
+                s=35,
+                alpha=0.8,
+                color=c,
+                edgecolors="none"
+            )
+
+            ax.add_patch(home_plate_polygon(y_front=0.10))
+
+            ax.set_xlim(-3, 3)
+            ax.set_ylim(-0.5, 5)
+            ax.set_aspect("equal", adjustable="box")
+
+            ax.set_title(title, fontsize=12, fontweight="bold")
+
+            ax.grid(True, alpha=0.2)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        return fig
+
+
+    def _find_col(df, candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+
+    def _safe_pct(num, den):
+        if den is None or den == 0:
+            return np.nan
+        return 100.0 * num / den
+
+
+    def _format_pct(x):
+        if pd.isna(x):
+            return "—"
+        return f"{x:.1f}%"
+
+
+    def _format_num(x, digits=0):
+        if pd.isna(x):
+            return "—"
+        return f"{x:.{digits}f}"
+
+
+    def _team_summary_metrics(df):
+        if df is None or df.empty:
+            return {
+                "strike_pct": np.nan,
+                "whiff_pct": np.nan,
+                "chase_pct": np.nan,
+                "first_pitch_strike_pct": np.nan,
+                "spin_rate": np.nan,
+                "ncaa_percentile": "—"
+            }
+
+        d = df.copy()
+
+        pitch_call_col = _find_col(d, ["PitchCall", "pitchCall"])
+        play_result_col = _find_col(d, ["PlayResult", "playResult"])
+        spin_col = _find_col(d, ["SpinRate", "RelSpeedSpinRate", "spin_rate"])
+        pitch_no_col = _find_col(d, ["PitchofPA", "PitchOfPA", "pitch_number_pa", "PitchNoPA"])
+        balls_col = _find_col(d, ["Balls", "balls"])
+        strikes_col = _find_col(d, ["Strikes", "strikes"])
+        plate_side_col = _find_col(d, ["PlateLocSide", "plate_x"])
+        plate_height_col = _find_col(d, ["PlateLocHeight", "plate_z"])
+
+        strike_calls = {
+            "StrikeCalled",
+            "StrikeSwinging",
+            "FoulBall",
+            "FoulBallFieldable",
+            "InPlay"
+        }
+
+        swinging_miss_calls = {
+            "StrikeSwinging"
+        }
+
+        swing_calls = {
+            "StrikeSwinging",
+            "FoulBall",
+            "FoulBallFieldable",
+            "InPlay"
+        }
+
+        if pitch_call_col is not None:
+            pitch_call_series = d[pitch_call_col].astype(str)
+            total_pitches = len(d)
+
+            strike_pct = _safe_pct(pitch_call_series.isin(strike_calls).sum(), total_pitches)
+            whiff_pct = _safe_pct(pitch_call_series.isin(swinging_miss_calls).sum(), pitch_call_series.isin(swing_calls).sum())
+        else:
+            strike_pct = np.nan
+            whiff_pct = np.nan
+
+        chase_pct = np.nan
+        if pitch_call_col is not None and plate_side_col is not None and plate_height_col is not None:
+            px = pd.to_numeric(d[plate_side_col], errors="coerce")
+            pz = pd.to_numeric(d[plate_height_col], errors="coerce")
+
+            in_zone = (
+                px.between(-0.83, 0.83, inclusive="both") &
+                pz.between(1.50, 3.50, inclusive="both")
+            )
+
+            swings = d[pitch_call_col].astype(str).isin(swing_calls)
+            out_of_zone = ~in_zone
+
+            chase_pct = _safe_pct((swings & out_of_zone).sum(), out_of_zone.sum())
+
+        first_pitch_strike_pct = np.nan
+
+        if pitch_no_col is not None and pitch_call_col is not None:
+            first_pitch_mask = pd.to_numeric(d[pitch_no_col], errors="coerce") == 1
+            fp = d.loc[first_pitch_mask].copy()
+
+            if not fp.empty:
+                first_pitch_strike_pct = _safe_pct(
+                    fp[pitch_call_col].astype(str).isin(strike_calls).sum(),
+                    len(fp)
+                )
+        elif balls_col is not None and strikes_col is not None and pitch_call_col is not None:
+            first_pitch_mask = (
+                pd.to_numeric(d[balls_col], errors="coerce").fillna(-1).eq(0) &
+                pd.to_numeric(d[strikes_col], errors="coerce").fillna(-1).eq(0)
+            )
+            fp = d.loc[first_pitch_mask].copy()
+
+            if not fp.empty:
+                first_pitch_strike_pct = _safe_pct(
+                    fp[pitch_call_col].astype(str).isin(strike_calls).sum(),
+                    len(fp)
+                )
+
+        spin_rate = np.nan
+        if spin_col is not None:
+            spin_rate = pd.to_numeric(d[spin_col], errors="coerce").mean()
+
+        return {
+            "strike_pct": strike_pct,
+            "whiff_pct": whiff_pct,
+            "chase_pct": chase_pct,
+            "first_pitch_strike_pct": first_pitch_strike_pct,
+            "spin_rate": spin_rate,
+            "ncaa_percentile": "—"
+        }
+
+
+    @output
+    @render.ui
+    def cmp_team_summary_table():
+        pur = cmp_purdue_filtered()
+        opp = cmp_opponent_filtered()
+
+        pur_m = _team_summary_metrics(pur)
+        opp_m = _team_summary_metrics(opp)
+
+        return ui.div(
+            {"class": "team-summary-wrap"},
+            ui.div("Team Summary", class_="team-summary-title"),
+            ui.tags.table(
+                {"class": "team-summary-table"},
+                ui.tags.thead(
+                    ui.tags.tr(
+                        ui.tags.th("Team"),
+                        ui.tags.th("Strike %"),
+                        ui.tags.th("Whiff %"),
+                        ui.tags.th("Chase %"),
+                        ui.tags.th("First Pitch Strike %"),
+                        ui.tags.th("Spin Rate"),
+                        ui.tags.th("NCAA Percentile"),
+                    )
+                ),
+                ui.tags.tbody(
+                    ui.tags.tr(
+                        ui.tags.td("Purdue", class_="team-summary-purdue"),
+                        ui.tags.td(_format_pct(pur_m["strike_pct"])),
+                        ui.tags.td(_format_pct(pur_m["whiff_pct"])),
+                        ui.tags.td(_format_pct(pur_m["chase_pct"])),
+                        ui.tags.td(_format_pct(pur_m["first_pitch_strike_pct"])),
+                        ui.tags.td(_format_num(pur_m["spin_rate"], 0)),
+                        ui.tags.td(pur_m["ncaa_percentile"]),
+                    ),
+                    ui.tags.tr(
+                        ui.tags.td("Opponent", class_="team-summary-opponent"),
+                        ui.tags.td(_format_pct(opp_m["strike_pct"])),
+                        ui.tags.td(_format_pct(opp_m["whiff_pct"])),
+                        ui.tags.td(_format_pct(opp_m["chase_pct"])),
+                        ui.tags.td(_format_pct(opp_m["first_pitch_strike_pct"])),
+                        ui.tags.td(_format_num(opp_m["spin_rate"], 0)),
+                        ui.tags.td(opp_m["ncaa_percentile"]),
+                    ),
+                )
+            )
+        )
+
+    
     @output
     @render.ui
     def main_tabs():
@@ -983,8 +2452,38 @@ def server(input, output, session):
                 ui.nav_panel(
                     "Comparison",
                     ui.div(
-                        ui.div("Comparison", class_="profile-title"),
-                        ui.div("Comparison tab placeholder.", class_="player-summary"),
+                        ui.div(
+                            ui.input_select("cmp_opponent_team", "Opponent Team", choices={}),
+                            ui.input_select("cmp_opponent_pitcher", "Opponent Pitcher", choices={}),
+                            ui.input_select(
+                                "cmp_pitch_type",
+                                "Pitch Type Comparison",
+                                choices={"all": "All Pitches"},
+                                selected="all",
+                            ),
+                            class_="cmp-filter-row",
+                        ),
+                        ui.output_ui("cmp_team_summary_table"),
+
+                        ui.output_ui("cmp_summary_cards"),
+
+                        ui.div(
+                            ui.div(ui.output_table("cmp_table"), class_="cmp-table-wrap"),
+                            class_="cmp-table-card",
+                        ),
+
+                        ui.div(
+                            ui.div(
+                                ui.output_plot("cmp_movement", height="340px"),
+                                class_="cmp-plot-card",
+                            ),
+                            ui.div(
+                                ui.output_plot("cmp_location", height="340px"),
+                                class_="cmp-plot-card",
+                            ),
+                            class_="cmp-grid-bottom",
+                        ),
+
                         class_="panel",
                     ),
                 ),
@@ -1020,8 +2519,11 @@ def server(input, output, session):
         df = current_df()
         team = input.team()
 
-        if df is None or df.empty or not team:
-            return ui.div("Select a team and date range to view data.")
+        if df is None or df.empty:
+            return ui.div("No data found for the selected season and date range.")
+
+        if not team:
+            return ui.div("Select a team to view data.")
 
         if input.player_type() != "pitcher":
             return ui.div("Batter view will be added next. Switch Player Type to Pitcher for now.")
@@ -1207,8 +2709,6 @@ def server(input, output, session):
 
         return fig
 
-    import math
-
     @output
     @render.ui
     def movement_legend():
@@ -1386,13 +2886,10 @@ def server(input, output, session):
             axes_list[j].set_facecolor("#f5f5f5")
             axes_list[j].set_axis_off()
 
-        locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
-        formatter = mdates.DateFormatter("%m-%d")
         for ax in axes_list[:n]:
-            ax.xaxis.set_major_locator(locator)
-            ax.xaxis.set_major_formatter(formatter)
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=6))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
 
-        from matplotlib.lines import Line2D
         legend_handles = [
             Line2D([0], [0], color="#DDB945", linewidth=2.5, marker="o", markersize=7, label="Strike %"),
             Line2D([0], [0], color="#AAAAAA", linewidth=2.5, linestyle="--", marker="s", markersize=6, label="Whiff %"),
@@ -1448,4 +2945,5 @@ def server(input, output, session):
         return out[cols]
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
+
 
