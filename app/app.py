@@ -1354,8 +1354,6 @@ app_ui = ui.page_fluid(
             padding: 10px 12px;
             text-align: center;
             font-size: 16px;
-            background: #ffffff;
-            color: #111111;
         }
 
         .team-summary-table th{
@@ -1980,6 +1978,7 @@ def server(input, output, session):
             ui.div(
                 ui.div(pitch_label, class_="cmp-chip"),
                 ui.div(f"Pitch Count: {pur_metrics['pitch_count']}", class_="cmp-chip"),
+                *([ ui.div("⚠ Low Sample", style="display:inline-block; background:#fef3c7; border:1px solid #f59e0b; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; color:#92400e;") ] if pur_metrics["pitch_count"] < 50 else []),
                 class_="cmp-chip-row",
             ),
             ui.div(
@@ -2022,6 +2021,7 @@ def server(input, output, session):
             ui.div(
                 ui.div(pitch_label, class_="cmp-chip"),
                 ui.div(f"Pitch Count: {opp_metrics['pitch_count']}", class_="cmp-chip"),
+                *([ ui.div("⚠ Low Sample", style="display:inline-block; background:#fef3c7; border:1px solid #f59e0b; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; color:#92400e;") ] if opp_metrics["pitch_count"] < 50 else []),
                 class_="cmp-chip-row",
             ),
             ui.div(
@@ -2079,21 +2079,18 @@ def server(input, output, session):
                 "Spin Rate (RPM)",
                 "IVB Avg (in)",
                 "HB Avg (in)",
-                "Chase %",
             ],
             pur_col: [
                 format_num(pm["velo_sd"]),
                 format_num(pm["spin_rate"], 0),
                 format_num(pm["ivb_avg"]),
                 format_num(pm["hb_avg"]),
-                format_pct(pm["chase_pct"]),
             ],
             opp_col: [
                 format_num(om["velo_sd"]),
                 format_num(om["spin_rate"], 0),
                 format_num(om["ivb_avg"]),
                 format_num(om["hb_avg"]),
-                format_pct(om["chase_pct"]),
             ],
         })
 
@@ -2249,6 +2246,217 @@ def server(input, output, session):
 
         return fig
 
+    @output
+    @render.plot
+    def cmp_count_location():
+        pur = cmp_purdue_filtered()
+        opp = cmp_opponent_filtered()
+
+        COUNTS = [
+            (0, 0, "0-0",  "FIRST PITCH"),
+            (3, 0, "3-0",  "HITTER'S COUNT"),
+            (0, 2, "0-2",  "PITCHER AHEAD"),
+            (1, 2, "1-2",  "PITCHER AHEAD"),
+            (2, 2, "2-2",  "EVEN COUNT"),
+            (3, 2, "3-2",  "FULL COUNT"),
+        ]
+
+        OUTCOME_COLORS = {
+            "StrikeCalled":         "#22c55e",
+            "StrikeSwinging":       "#ef4444",
+            "Ball":                 "#94a3b8",
+            "FoulBallFieldable":    "#f97316",
+            "FoulBallNotFieldable": "#f97316",
+            "InPlay":               "#3b82f6",
+        }
+        DEFAULT_COLOR = "#cbd5e1"
+
+        STRIKE_EVENTS = {
+            "StrikeCalled", "StrikeSwinging",
+            "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"
+        }
+
+        def _get_count_df(d, balls, strikes):
+            if d is None or d.empty:
+                return pd.DataFrame()
+            b_col = _find_col(d, ["Balls", "balls"])
+            s_col = _find_col(d, ["Strikes", "strikes"])
+            if b_col is None or s_col is None:
+                return pd.DataFrame()
+            mask = (
+                pd.to_numeric(d[b_col],   errors="coerce").eq(balls) &
+                pd.to_numeric(d[s_col], errors="coerce").eq(strikes)
+            )
+            return d[mask].copy()
+
+        def _spct(df):
+            if df.empty or "PitchCall" not in df.columns:
+                return None
+            n = len(df)
+            return df["PitchCall"].astype(str).isin(STRIKE_EVENTS).sum() / n * 100 if n > 0 else None
+
+        def _draw_zone(ax, df):
+            """Draw zone exactly like home tab, with outcome-colored dots."""
+            ax.set_facecolor("#f7f7f7")
+
+            # outer shadow zone — matches home tab
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
+                (ZONE_RIGHT - ZONE_LEFT) + 0.6,
+                (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+                alpha=0.25, facecolor="#b0b0b0", edgecolor="none"
+            ))
+
+            # strike zone box
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT, ZONE_BOTTOM),
+                ZONE_RIGHT - ZONE_LEFT,
+                ZONE_TOP - ZONE_BOTTOM,
+                fill=False, linewidth=2, edgecolor="black"
+            ))
+
+            # horizontal midline — matches home tab dashed blue
+            ax.plot(
+                [ZONE_LEFT, ZONE_RIGHT],
+                [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2,
+                linestyle="--", linewidth=1, color="#1f77b4"
+            )
+
+            # vertical midline — matches home tab dashed orange
+            ax.plot(
+                [0, 0], [ZONE_BOTTOM, ZONE_TOP],
+                linestyle="--", linewidth=1, color="#ff7f0e"
+            )
+
+            # home plate
+            ax.add_patch(home_plate_polygon(y_front=0.10))
+
+            # axis limits and style — matches home tab exactly
+            ax.set_xlim(-3, 3)
+            ax.set_ylim(-0.5, 5)
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(True, alpha=0.2)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_edgecolor("black")
+                spine.set_linewidth(1.5)
+
+            if df.empty:
+                ax.text(0.5, 0.5, "n = 0", ha="center", va="center",
+                        transform=ax.transAxes, fontsize=9, color="#94a3b8")
+                return
+
+            loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()].copy()
+            if loc.empty:
+                return
+
+            dot_colors = [
+                OUTCOME_COLORS.get(str(pc).strip(), DEFAULT_COLOR)
+                for pc in (loc["PitchCall"].tolist() if "PitchCall" in loc.columns
+                           else [None] * len(loc))
+            ]
+            ax.scatter(
+                loc["PlateLocSide"], loc["PlateLocHeight"],
+                s=35, alpha=0.8, color=dot_colors, edgecolors="none"
+            )
+
+        n_rows = len(COUNTS)
+        fig, axes = plt.subplots(
+            n_rows, 2,
+            figsize=(20, n_rows * 5.0),
+            gridspec_kw={"wspace": 0.05, "hspace": 0.45}
+        )
+        fig.patch.set_facecolor("white")
+
+        pur_name = cmp_purdue_name()
+        opp_name = cmp_opponent_name()
+
+        legend_items = [
+            ("Called Strike",  "#22c55e"),
+            ("Swinging Strike","#ef4444"),
+            ("Ball",           "#94a3b8"),
+            ("Foul",           "#f97316"),
+            ("In Play",        "#3b82f6"),
+        ]
+        legend_handles = [
+            plt.Line2D([0], [0], marker="o", color="w",
+                       markerfacecolor=c, markersize=8, label=lbl)
+            for lbl, c in legend_items
+        ]
+        fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            ncol=len(legend_items),
+            fontsize=9,
+            frameon=True,
+            fancybox=False,
+            edgecolor="black",
+            facecolor="white",
+            bbox_to_anchor=(0.5, 0.995),
+        )
+
+        for row_idx, (balls, strikes, count_label, count_context) in enumerate(COUNTS):
+            fig.patches.append(
+                plt.Rectangle(
+                    (0.01, (n_rows - row_idx - 1) / n_rows + 0.008),
+                    0.98,
+                    1 / n_rows - 0.016,
+                    transform=fig.transFigure,
+                    facecolor="white",
+                    edgecolor="#cbd5e1",
+                    linewidth=1.2,
+                    zorder=-1,
+                )
+            )
+            pur_cdf = _get_count_df(pur, balls, strikes)
+            opp_cdf = _get_count_df(opp, balls, strikes)
+            pur_s   = _spct(pur_cdf)
+            opp_s   = _spct(opp_cdf)
+
+            for col_idx, (ax, df, name) in enumerate(
+                zip(axes[row_idx], [pur_cdf, opp_cdf], [pur_name, opp_name])
+            ):
+                _draw_zone(ax, df)
+                ax.set_title(name, fontsize=9, fontweight="bold",
+                             color="#1e293b", pad=4)
+                n = len(df)
+    
+            ax_left = axes[row_idx][0]
+            pur_txt = f"{pur_s:.0f}%" if pur_s is not None else "—"
+            opp_txt = f"{opp_s:.0f}%" if opp_s is not None else "—"
+
+            ax_left.text(-0.95, 0.78, count_label,
+                         transform=ax_left.transAxes,
+                         ha="center", va="center",
+                         fontsize=18, fontweight="black", color="#1e293b")
+            ax_left.text(-0.95, 0.62, count_context,
+                         transform=ax_left.transAxes,
+                         ha="center", va="center",
+                         fontsize=7, fontweight="bold", color="#64748b")
+            ax_left.text(-0.95, 0.46, "Strike%:",
+                         transform=ax_left.transAxes,
+                         ha="center", fontsize=7, color="#94a3b8")
+            ax_left.text(-1.08, 0.30, pur_txt,
+                         transform=ax_left.transAxes,
+                         ha="center", va="center",
+                         fontsize=9, fontweight="bold", color="#1e293b",
+                         bbox=dict(boxstyle="round,pad=0.3",
+                                   facecolor="#DDB945", edgecolor="none"))
+            ax_left.text(-0.82, 0.30, opp_txt,
+                         transform=ax_left.transAxes,
+                         ha="center", va="center",
+                         fontsize=9, fontweight="bold", color="white",
+                         bbox=dict(boxstyle="round,pad=0.3",
+                                   facecolor="#1e293b", edgecolor="none"))
+
+        fig.subplots_adjust(left=0.14, right=0.99, top=0.96, bottom=0.04,
+                            hspace=0.55, wspace=0.05)
+        return fig
+
+        
+
 
     def _find_col(df, candidates):
         for c in candidates:
@@ -2283,7 +2491,6 @@ def server(input, output, session):
                 "chase_pct": np.nan,
                 "first_pitch_strike_pct": np.nan,
                 "spin_rate": np.nan,
-                "ncaa_percentile": "—"
             }
 
         d = df.copy()
@@ -2300,8 +2507,8 @@ def server(input, output, session):
         strike_calls = {
             "StrikeCalled",
             "StrikeSwinging",
-            "FoulBall",
             "FoulBallFieldable",
+            "FoulBallNotFieldable",
             "InPlay"
         }
 
@@ -2311,7 +2518,7 @@ def server(input, output, session):
 
         swing_calls = {
             "StrikeSwinging",
-            "FoulBall",
+            "FoulBallNotFieldable",
             "FoulBallFieldable",
             "InPlay"
         }
@@ -2331,15 +2538,21 @@ def server(input, output, session):
             px = pd.to_numeric(d[plate_side_col], errors="coerce")
             pz = pd.to_numeric(d[plate_height_col], errors="coerce")
 
-            in_zone = (
-                px.between(-0.83, 0.83, inclusive="both") &
-                pz.between(1.50, 3.50, inclusive="both")
+            has_location = px.notna() & pz.notna()
+
+            is_outside = (
+                has_location & (
+                    (px < ZONE_LEFT)   |
+                    (px > ZONE_RIGHT)  |
+                    (pz < ZONE_BOTTOM) |
+                    (pz > ZONE_TOP)
+                )
             )
 
             swings = d[pitch_call_col].astype(str).isin(swing_calls)
-            out_of_zone = ~in_zone
+            outside_count = is_outside.sum()
 
-            chase_pct = _safe_pct((swings & out_of_zone).sum(), out_of_zone.sum())
+            chase_pct = _safe_pct((swings & is_outside).sum(), outside_count)
 
         first_pitch_strike_pct = np.nan
 
@@ -2382,11 +2595,129 @@ def server(input, output, session):
     @output
     @render.ui
     def cmp_team_summary_table():
-        pur = cmp_purdue_filtered()
-        opp = cmp_opponent_filtered()
+        pur = cmp_purdue_df()
+        opp = cmp_opponent_df()
 
         pur_m = _team_summary_metrics(pur)
         opp_m = _team_summary_metrics(opp)
+
+
+        def _winner(pur_val, opp_val):
+            """Returns 'purdue', 'opp', or None if tied / both missing."""
+            if pd.isna(pur_val) or pd.isna(opp_val):
+                return None
+            if pur_val > opp_val:
+                return "purdue"
+            if opp_val > pur_val:
+                return "opp"
+            return None
+
+        # ── helper: styled <td> based on whether this team wins the metric ──
+        def _td(text, is_winner, is_loser):
+            if is_winner:
+                style = (
+                    "color:#15803d; font-weight:900; background:#dcfce7;"
+                    "border-radius:4px; padding:3px 10px; display:inline-block;"
+                )
+            elif is_loser:
+                style = (
+                    "color:#b91c1c; font-weight:700; background:#fee2e2;"
+                    "border-radius:4px; padding:3px 10px; display:inline-block;"
+                )
+            else:
+                style = "color:#64748b; padding:3px 10px; display:inline-block;"
+            return ui.tags.td(ui.tags.span(text, style=style))
+
+        # ── compute winners per metric ──
+        metrics = [
+            ("strike_pct",             _format_pct(pur_m["strike_pct"]),             _format_pct(opp_m["strike_pct"]),             _winner(pur_m["strike_pct"],             opp_m["strike_pct"])),
+            ("whiff_pct",              _format_pct(pur_m["whiff_pct"]),              _format_pct(opp_m["whiff_pct"]),              _winner(pur_m["whiff_pct"],              opp_m["whiff_pct"])),
+            ("chase_pct",              _format_pct(pur_m["chase_pct"]),              _format_pct(opp_m["chase_pct"]),              _winner(pur_m["chase_pct"],              opp_m["chase_pct"])),
+            ("first_pitch_strike_pct", _format_pct(pur_m["first_pitch_strike_pct"]), _format_pct(opp_m["first_pitch_strike_pct"]), _winner(pur_m["first_pitch_strike_pct"], opp_m["first_pitch_strike_pct"])),
+            ("spin_rate",              _format_num(pur_m["spin_rate"], 0),           _format_num(opp_m["spin_rate"], 0),           _winner(pur_m["spin_rate"],              opp_m["spin_rate"])),
+        ]
+
+        # ── legend chips ──
+        legend = ui.div(
+            ui.tags.span(
+                ui.tags.span("", style="display:inline-block;width:12px;height:12px;background:#dcfce7;border:1.5px solid #22c55e;border-radius:3px;margin-right:4px;vertical-align:middle;"),
+                "Better",
+                style="font-size:11px; color:#475569; margin-right:12px;"
+            ),
+            ui.tags.span(
+                ui.tags.span("", style="display:inline-block;width:12px;height:12px;background:#fee2e2;border:1.5px solid #ef4444;border-radius:3px;margin-right:4px;vertical-align:middle;"),
+                "Worse",
+                style="font-size:11px; color:#475569;"
+            ),
+            style="display:flex; align-items:center; padding:6px 0 8px 0;"
+        )
+
+        # ── build rows ──
+        pur_tds = [ui.tags.td("Purdue", class_="team-summary-purdue")]
+        opp_tds = [ui.tags.td("Opponent", class_="team-summary-opponent")]
+
+        for _, pur_val, opp_val, w in metrics:
+            pur_tds.append(_td(pur_val, w == "purdue", w == "opp"))
+            opp_tds.append(_td(opp_val, w == "opp",    w == "purdue"))
+
+        # ── auto scout note ──  ← INSERT EVERYTHING FROM HERE
+        purdue_wins = sum(1 for _, _, _, w in metrics if w == "purdue")
+        opp_wins    = sum(1 for _, _, _, w in metrics if w == "opp")
+
+        metric_labels = {
+            "strike_pct":             "Strike %",
+            "whiff_pct":              "Whiff %",
+            "chase_pct":              "Chase %",
+            "first_pitch_strike_pct": "First Pitch Strike %",
+            "spin_rate":              "Spin Rate",
+        }
+
+        opp_threat_label, opp_threat_pur, opp_threat_opp = "", "", ""
+        best_gap = -1
+        for key, pur_val, opp_val, w in metrics:
+            if w == "opp" and not pd.isna(pur_m[key]) and not pd.isna(opp_m[key]):
+                gap = abs(opp_m[key] - pur_m[key])
+                if gap > best_gap:
+                    best_gap = gap
+                    opp_threat_label = metric_labels[key]
+                    opp_threat_pur   = pur_val
+                    opp_threat_opp   = opp_val
+
+        pur_edge_label, pur_edge_pur, pur_edge_opp = "", "", ""
+        best_gap = -1
+        for key, pur_val, opp_val, w in metrics:
+            if w == "purdue" and not pd.isna(pur_m[key]) and not pd.isna(opp_m[key]):
+                gap = abs(pur_m[key] - opp_m[key])
+                if gap > best_gap:
+                    best_gap = gap
+                    pur_edge_label = metric_labels[key]
+                    pur_edge_pur   = pur_val
+                    pur_edge_opp   = opp_val
+
+        if purdue_wins > opp_wins:
+            note_color = "#15803d"; note_bg = "#f0fdf4"; note_border = "#22c55e"
+            leader = f"✅ Purdue leads {purdue_wins} of {len(metrics)} metrics."
+        elif opp_wins > purdue_wins:
+            note_color = "#b91c1c"; note_bg = "#fff1f2"; note_border = "#ef4444"
+            leader = f"⚠️ Opponent leads {opp_wins} of {len(metrics)} metrics."
+        else:
+            note_color = "#92400e"; note_bg = "#fffbeb"; note_border = "#f59e0b"
+            leader = f"➖ Even matchup — {purdue_wins} of {len(metrics)} metrics each."
+
+        parts = [leader]
+        if opp_threat_label:
+            parts.append(f"Opponent Advantage: {opp_threat_label} ({opp_threat_opp} vs {opp_threat_pur}) - ")
+        if pur_edge_label:
+            parts.append(f"Purdue Advantage: {pur_edge_label} ({pur_edge_pur} vs {pur_edge_opp}).")
+
+        scout_note = ui.div(
+            " ".join(parts),
+            style=(
+                f"margin-top:8px; padding:8px 12px; font-size:12px; line-height:1.6;"
+                f"color:{note_color}; background:{note_bg};"
+                f"border-left:3px solid {note_border}; border-radius:0 4px 4px 0;"
+            )
+        )
 
         return ui.div(
             {"class": "team-summary-wrap"},
@@ -2401,30 +2732,14 @@ def server(input, output, session):
                         ui.tags.th("Chase %"),
                         ui.tags.th("First Pitch Strike %"),
                         ui.tags.th("Spin Rate"),
-                        ui.tags.th("NCAA Percentile"),
                     )
                 ),
                 ui.tags.tbody(
-                    ui.tags.tr(
-                        ui.tags.td("Purdue", class_="team-summary-purdue"),
-                        ui.tags.td(_format_pct(pur_m["strike_pct"])),
-                        ui.tags.td(_format_pct(pur_m["whiff_pct"])),
-                        ui.tags.td(_format_pct(pur_m["chase_pct"])),
-                        ui.tags.td(_format_pct(pur_m["first_pitch_strike_pct"])),
-                        ui.tags.td(_format_num(pur_m["spin_rate"], 0)),
-                        ui.tags.td(pur_m["ncaa_percentile"]),
-                    ),
-                    ui.tags.tr(
-                        ui.tags.td("Opponent", class_="team-summary-opponent"),
-                        ui.tags.td(_format_pct(opp_m["strike_pct"])),
-                        ui.tags.td(_format_pct(opp_m["whiff_pct"])),
-                        ui.tags.td(_format_pct(opp_m["chase_pct"])),
-                        ui.tags.td(_format_pct(opp_m["first_pitch_strike_pct"])),
-                        ui.tags.td(_format_num(opp_m["spin_rate"], 0)),
-                        ui.tags.td(opp_m["ncaa_percentile"]),
-                    ),
+                    ui.tags.tr(*pur_tds),
+                    ui.tags.tr(*opp_tds),
                 )
-            )
+            ),
+            scout_note,
         )
 
     
@@ -2468,20 +2783,9 @@ def server(input, output, session):
                         ui.output_ui("cmp_summary_cards"),
 
                         ui.div(
-                            ui.div(ui.output_table("cmp_table"), class_="cmp-table-wrap"),
-                            class_="cmp-table-card",
-                        ),
-
-                        ui.div(
-                            ui.div(
-                                ui.output_plot("cmp_movement", height="340px"),
-                                class_="cmp-plot-card",
-                            ),
-                            ui.div(
-                                ui.output_plot("cmp_location", height="340px"),
-                                class_="cmp-plot-card",
-                            ),
-                            class_="cmp-grid-bottom",
+                            ui.div("Location by Count", class_="team-summary-title"),
+                            ui.output_plot("cmp_count_location", height="1900px"),
+                            class_="team-summary-wrap",
                         ),
 
                         class_="panel",
@@ -2945,5 +3249,4 @@ def server(input, output, session):
         return out[cols]
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
-
 
