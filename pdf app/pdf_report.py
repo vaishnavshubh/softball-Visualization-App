@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle, Polygon
 from matplotlib.lines import Line2D
+from matplotlib.backends.backend_pdf import PdfPages
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -326,7 +328,7 @@ app_ui = ui.page_fluid(
     ui.h2("Softball Pitch Dashboard (Uploaded CSV)"),
 
     ui.layout_sidebar(
-        ui.panel_sidebar(
+        ui.sidebar(
             ui.input_file(
                 "file",
                 "Upload CSV (TrackMan schema)",
@@ -334,36 +336,11 @@ app_ui = ui.page_fluid(
                 accept=[".csv"],
             ),
 
-            ui.output_ui("date_range_ui"),
-
-            ui.input_select(
-                "team",
-                "Team Name",
-                choices={},
-            ),
-            ui.input_select(
-                "session_type",
-                "Session Type",
-                choices={
-                    "all": "All",
-                    "bullpen": "Bullpen",
-                    "bp": "Batting Practice",
-                    "scrimmage": "Scrimmage",
-                },
-                selected="all",
-            ),
-            ui.input_radio_buttons(
-                "player_type",
-                "Player Type",
-                choices={"pitcher": "Pitcher", "batter": "Batter"},
-                selected="pitcher",
-            ),
             ui.input_select("player", "Player Name", choices={"": "—"}),
-            width=3,
+            ui.download_button("download_pdf", "Download PDF Report"),
+            width=300,
         ),
-        ui.panel_main(
-            ui.output_ui("main_tabs")
-        ),
+        ui.output_ui("main_tabs"),
     ),
 )
 
@@ -398,136 +375,61 @@ def server(input, output, session):
             if c in df.columns:
                 df[c] = df[c].astype(str).str.strip()
 
+        # Normalize PitcherId/BatterId to string so dropdown and filters work (handles int/float/NaN)
+        for c in ["PitcherId", "BatterId"]:
+            if c in df.columns:
+                s = df[c].astype(str).str.strip()
+                s = s.replace("nan", "").replace("NaN", "")
+                df[c] = s
+
         df["SessionType"] = infer_session_type_for_purdue(df)
         return df
-
-    # ---- 2. Date bounds & date filter ----
-    @reactive.calc
-    def date_bounds():
-        df = uploaded_df()
-        if df is None or "Date" not in df.columns or df["Date"].empty:
-            return None, None
-        dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
-        if dates.empty:
-            return None, None
-        return dates.min().date(), dates.max().date()
-
-    @output
-    @render.ui
-    def date_range_ui():
-        dmin, dmax = date_bounds()
-        if dmin is None or dmax is None:
-            return ui.div("Upload a CSV to enable date filtering.")
-        return ui.div(
-            ui.input_date("date_start", "Start", value=dmin, min=dmin, max=dmax),
-            ui.input_date("date_end", "End", value=dmax, min=dmin, max=dmax),
-        )
-
-    @reactive.calc
-    def date_range_invalid():
-        start = input.date_start()
-        end = input.date_end()
-        return start is not None and end is not None and start > end
 
     @reactive.calc
     def current_df():
         df = uploaded_df()
         if df is None:
             return None
-
-        dmin, dmax = date_bounds()
-        start = input.date_start()
-        end = input.date_end()
-
-        if start is None or end is None or dmin is None or dmax is None:
-            return df
-
-        if start > end:
-            return None
-
-        df = df.copy()
-        df["_date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
-        df = df[df["_date"].notna() & (df["_date"] >= start) & (df["_date"] <= end)]
-        df = df.drop(columns=["_date"], errors="ignore")
-        if df.empty:
-            return None
         return df
-
-    # ---- 3. Team & player dropdowns ----
-    @reactive.effect
-    def _update_team_choices():
-        df = current_df()
-        if df is None or df.empty:
-            ui.update_select("team", choices={}, session=session)
-            return
-
-        teams = set()
-        for col in ["PitcherTeam", "BatterTeam"]:
-            if col in df.columns:
-                vals = df[col].dropna().astype(str).str.strip().tolist()
-                teams.update([v for v in vals if v])
-
-        teams = sorted(list(teams))
-        choices = {t: ("Purdue University" if t == PURDUE_CODE else t) for t in teams}
-        default_team = PURDUE_CODE if PURDUE_CODE in teams else (teams[0] if teams else None)
-        ui.update_select("team", choices=choices, selected=default_team, session=session)
-
-    @reactive.effect
-    def _force_session_all_for_non_purdue():
-        team = input.team()
-        if team and not is_purdue_team(team):
-            ui.update_select("session_type", selected="all", session=session)
 
     @reactive.effect
     def _update_player_choices():
         df = current_df()
-        team = input.team()
-        ptype = input.player_type()
-
-        if df is None or df.empty or not team:
+        if df is None or df.empty:
+            ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
+            return
+        if "PitcherId" not in df.columns or "Pitcher" not in df.columns:
             ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
             return
 
-        if ptype == "pitcher":
-            if "PitcherTeam" in df.columns:
-                df = df[df["PitcherTeam"].astype(str).str.strip() == str(team)]
-            if "PitcherId" not in df.columns or "Pitcher" not in df.columns:
-                ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
-                return
-            lookup = (
-                df[["PitcherId", "Pitcher"]]
-                .dropna()
-                .drop_duplicates()
-                .sort_values(["Pitcher", "PitcherId"])
-            )
-            choices = {
-                str(r.PitcherId): (format_display_name(r.Pitcher) or str(r.PitcherId))
-                for r in lookup.itertuples(index=False)
-            }
-            ui.update_select(
-                "player",
-                choices=choices,
-                label="Player Name",
-                selected=list(choices.keys())[0] if choices else None,
-                session=session,
-            )
-        else:
-            # Batter mode placeholder; you can mirror pitcher logic later.
-            ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
+        # Build lookup: PitcherId already string-normalized in uploaded_df; drop empty/nan
+        lookup = df[["PitcherId", "Pitcher"]].copy()
+        lookup["PitcherId"] = lookup["PitcherId"].astype(str).str.strip()
+        lookup = lookup[
+            lookup["PitcherId"].str.len().gt(0)
+            & lookup["PitcherId"].str.lower().ne("nan")
+        ]
+        lookup = lookup.drop_duplicates().sort_values(["Pitcher", "PitcherId"])
+
+        choices = {
+            str(r.PitcherId): (format_display_name(r.Pitcher) or str(r.PitcherId))
+            for r in lookup.itertuples(index=False)
+        }
+        ui.update_select(
+            "player",
+            choices=choices,
+            label="Player Name",
+            selected=list(choices.keys())[0] if choices else None,
+            session=session,
+        )
 
     # ---- 4. Core reactive data for visuals ----
     @reactive.calc
     def pitcher_data():
         df = current_df()
-        team = input.team()
-        pid = input.player() if input.player_type() == "pitcher" else None
-        if df is None or not team or not pid:
+        pid = input.player()
+        if df is None or df.empty or not pid:
             return None
-
-        if "PitcherTeam" in df.columns:
-            df = df[df["PitcherTeam"].astype(str).str.strip() == str(team)]
-
-        df = apply_session_filter_for_team(df, team, input.session_type())
         return df[df["PitcherId"].astype(str) == str(pid)]
 
     @reactive.calc
@@ -540,19 +442,16 @@ def server(input, output, session):
     @reactive.calc
     def usage_df():
         data = pitcher_data()
-        pid = input.player() if input.player_type() == "pitcher" else None
-        if data is None or not pid or input.player_type() != "pitcher":
+        pid = input.player()
+        if data is None or not pid:
             return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
         return compute_usage(data, pid)
 
     @reactive.calc
     def player_summary_text():
-        if input.player_type() != "pitcher":
-            return "Select Pitcher to view profile"
-
         data = pitcher_data()
         if data is None or data.empty:
-            return "Select Pitcher to view profile"
+            return "Select player to view profile"
 
         name_raw = data["Pitcher"].iloc[0] if "Pitcher" in data.columns else ""
         throws_raw = data["PitcherThrows"].iloc[0] if "PitcherThrows" in data.columns else ""
@@ -569,12 +468,9 @@ def server(input, output, session):
     @output
     @render.ui
     def main_tabs():
-        if date_range_invalid():
-            return ui.div("Start date must be on or before end date.")
-
         df = current_df()
         if df is None or df.empty:
-            return ui.div("Upload a CSV (with the standard schema) and select a team/player.")
+            return ui.div("Upload a CSV (with the standard schema) and select a player.")
 
         return ui.navset_tab(
             ui.nav_panel(
@@ -803,12 +699,6 @@ def server(input, output, session):
     @output
     @render.plot
     def dev_strike_whiff_trend():
-        if input.player_type() != "pitcher":
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "Pitcher view only.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
         data = pitcher_data()
         if data is None or data.empty:
             fig, ax = plt.subplots(figsize=(10, 4))
@@ -938,7 +828,7 @@ def server(input, output, session):
     @render.table
     def usage_table():
         data = pitcher_data()
-        pid = input.player() if input.player_type() == "pitcher" else None
+        pid = input.player()
 
         cols = ["Pitch type", "Count", "Usage %", "Max Velo", "Avg Velo", "Spin Rate", "Strike %", "Whiff %", "Chase %"]
 
@@ -973,6 +863,181 @@ def server(input, output, session):
         })
 
         return out[cols]
+
+    # ---- 7. PDF download ----
+    @session.download(
+        filename=lambda: f"pitch_report_{input.player() or 'unknown'}_{date.today().isoformat()}.pdf"
+    )
+    def download_pdf():
+        pid = input.player()
+        data = pitcher_data()
+
+        # Create a temporary PDF file
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+
+        with PdfPages(tmp.name) as pdf:
+            if data is None or data.empty or not pid:
+                # Simple page indicating no data
+                fig, ax = plt.subplots(figsize=(8.5, 11))
+                ax.text(
+                    0.5, 0.5,
+                    "No data available for the selected player.",
+                    ha="center", va="center", wrap=True,
+                    fontsize=14,
+                )
+                ax.axis("off")
+                pdf.savefig(fig)
+                plt.close(fig)
+                return tmp.name
+
+            # 1) Usage pie
+            usage = compute_usage(data, pid)
+            colors = build_pitch_color_map(usage[PITCH_TYPE_COL].dropna().unique()) if not usage.empty else {}
+            fig1, ax1 = plt.subplots(figsize=(8, 6))
+            fig1.patch.set_facecolor("#f7f7f7")
+            ax1.set_facecolor("#f7f7f7")
+            if usage.empty:
+                ax1.text(0.5, 0.5, "No pitch usage data", ha="center", va="center", transform=ax1.transAxes)
+                ax1.axis("off")
+            else:
+                labels = usage[PITCH_TYPE_COL].tolist()
+                pcts = usage["usage_pct"].values
+                c = [colors.get(pt, (0.5, 0.5, 0.5)) for pt in labels]
+                ax1.pie(
+                    pcts,
+                    labels=labels,
+                    colors=c,
+                    startangle=90,
+                    autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
+                    pctdistance=0.65,
+                    textprops={"fontsize": 10, "fontweight": "bold"},
+                )
+                ax1.set_title("Pitch Usage", fontsize=16, fontweight="bold")
+            pdf.savefig(fig1)
+            plt.close(fig1)
+
+            # 2) Location plot
+            fig2, ax2 = plt.subplots(figsize=(8, 6))
+            fig2.patch.set_facecolor("#f7f7f7")
+            ax2.set_facecolor("#f7f7f7")
+            loc = data[
+                data["PlateLocSide"].notna()
+                & data["PlateLocHeight"].notna()
+                & data[PITCH_TYPE_COL].notna()
+            ]
+            if loc.empty:
+                ax2.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax2.transAxes)
+                ax2.axis("off")
+            else:
+                ax2.add_patch(Rectangle(
+                    (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
+                    (ZONE_RIGHT - ZONE_LEFT) + 0.6,
+                    (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+                    alpha=0.25
+                ))
+                ax2.add_patch(Rectangle(
+                    (ZONE_LEFT, ZONE_BOTTOM),
+                    ZONE_RIGHT - ZONE_LEFT,
+                    ZONE_TOP - ZONE_BOTTOM,
+                    fill=False,
+                    linewidth=2
+                ))
+                ax2.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
+                ax2.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
+                for pt, g in loc.groupby(PITCH_TYPE_COL):
+                    ax2.scatter(
+                        g["PlateLocSide"],
+                        g["PlateLocHeight"],
+                        s=35,
+                        alpha=0.8,
+                        color=colors.get(pt, (0.5, 0.5, 0.5)),
+                        label=pt,
+                    )
+                ax2.add_patch(home_plate_polygon(y_front=0.10))
+                ax2.set_xlim(-3, 3)
+                ax2.set_ylim(-0.5, 5)
+                ax2.set_aspect("equal", adjustable="box")
+                ax2.set_xlabel("PlateLocSide")
+                ax2.set_ylabel("PlateLocHeight")
+                ax2.set_title("Pitch Locations", fontsize=16, fontweight="bold")
+                ax2.grid(True, alpha=0.2)
+                ax2.legend(fontsize=8)
+            pdf.savefig(fig2)
+            plt.close(fig2)
+
+            # 3) Movement plot
+            fig3, ax3 = plt.subplots(figsize=(8, 6))
+            fig3.patch.set_facecolor("#f7f7f7")
+            ax3.set_facecolor("#f7f7f7")
+            mov = data[data[X_MOV].notna() & data[Y_MOV].notna() & data[PITCH_TYPE_COL].notna()]
+            if mov.empty:
+                ax3.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax3.transAxes)
+                ax3.axis("off")
+            else:
+                for pt, g in mov.groupby(PITCH_TYPE_COL):
+                    ax3.scatter(
+                        g[X_MOV], g[Y_MOV],
+                        s=25, alpha=0.75,
+                        color=colors.get(pt, (0.5, 0.5, 0.5)),
+                        label=pt,
+                    )
+                ax3.axhline(0, linewidth=1)
+                ax3.axvline(0, linewidth=1)
+                ax3.set_xlim(*MOV_XLIM)
+                ax3.set_ylim(*MOV_YLIM)
+                ax3.set_xlabel("Horizontal break (in)")
+                ax3.set_ylabel("Induced vertical break (in)")
+                ax3.set_title("Pitch Movements", fontsize=16, fontweight="bold")
+                ax3.grid(True, alpha=0.25)
+                ax3.legend(fontsize=8)
+            pdf.savefig(fig3)
+            plt.close(fig3)
+
+            # 4) Usage table page
+            summary = compute_pitch_metrics(data, pid)
+            fig4, ax4 = plt.subplots(figsize=(8.5, 11))
+            ax4.axis("off")
+            if summary is None or summary.empty:
+                ax4.text(0.5, 0.5, "No summary metrics available.", ha="center", va="center", fontsize=14)
+            else:
+                out = summary.copy()
+                out["max_velo"] = pd.to_numeric(out.get("max_velo"), errors="coerce").round(1)
+                out["avg_velo"] = pd.to_numeric(out.get("avg_velo"), errors="coerce").round(1)
+                out["spin_rate"] = pd.to_numeric(out.get("spin_rate"), errors="coerce").round(0)
+                out["usage_pct"] = (out["usage_pct"] * 100).round(1)
+                out["strike_pct"] = (out["strike_pct"] * 100).round(1)
+                out["whiff_pct"] = (out["whiff_pct"] * 100).round(1)
+                out["chase_pct"] = (out["chase_pct"] * 100).round(1)
+
+                display_df = out.rename(columns={
+                    PITCH_TYPE_COL: "Pitch type",
+                    "pitch_count": "Count",
+                    "usage_pct": "Usage %",
+                    "max_velo": "Max Velo",
+                    "avg_velo": "Avg Velo",
+                    "spin_rate": "Spin Rate",
+                    "strike_pct": "Strike %",
+                    "whiff_pct": "Whiff %",
+                    "chase_pct": "Chase %",
+                })
+                cols = ["Pitch type", "Count", "Usage %", "Max Velo", "Avg Velo", "Spin Rate", "Strike %", "Whiff %", "Chase %"]
+                display_df = display_df[cols]
+
+                table = ax4.table(
+                    cellText=display_df.values,
+                    colLabels=display_df.columns,
+                    loc="center",
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(8)
+                table.scale(1.0, 1.3)
+                ax4.set_title("Pitch Summary Metrics", fontsize=16, fontweight="bold", pad=20)
+
+            pdf.savefig(fig4)
+            plt.close(fig4)
+
+        return tmp.name
 
 
 # ---------------------------------------------------------------------------
