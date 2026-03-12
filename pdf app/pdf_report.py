@@ -373,7 +373,7 @@ def server(input, output, session):
             "PitcherTeam", "BatterTeam", "PitcherThrows", "BatterSide"
         ]:
             if c in df.columns:
-                df[c] = df[c].astype(str).str.strip()
+                df[c] = df[c].astype(str).str.strip().replace("nan", np.nan)
 
         # Normalize PitcherId/BatterId to string so dropdown and filters work (handles int/float/NaN)
         for c in ["PitcherId", "BatterId"]:
@@ -713,7 +713,8 @@ def server(input, output, session):
             return fig
 
         df = data.copy()
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", infer_datetime_format=True)
+        df = df[df["Date"].notna()]
         df["Date"] = df["Date"].dt.normalize()
         df = df.dropna(subset=["Date", PITCH_TYPE_COL])
 
@@ -767,12 +768,10 @@ def server(input, output, session):
         fig_h = 5 * nrows
         fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h))
 
-        if nrows == 1 and ncols == 1:
-            axes_list = [axes]
-        elif nrows == 1:
-            axes_list = list(axes)
+        if isinstance(axes, np.ndarray):
+            axes_list = axes.flatten().tolist()
         else:
-            axes_list = [ax for row in axes for ax in (row if isinstance(row, (list, np.ndarray)) else [row])]
+            axes_list = [axes]
 
         fig.patch.set_facecolor("#ffffff")
         fig.subplots_adjust(top=0.82, hspace=0.5, wspace=0.3)
@@ -865,7 +864,7 @@ def server(input, output, session):
         return out[cols]
 
     # ---- 7. PDF download ----
-    @session.download(
+    @render.download(
         filename=lambda: f"pitch_report_{input.player() or 'unknown'}_{date.today().isoformat()}.pdf"
     )
     def download_pdf():
@@ -873,13 +872,13 @@ def server(input, output, session):
         data = pitcher_data()
 
         # Create a temporary PDF file
-        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        tmp.close()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp_path = tmp.name
 
-        with PdfPages(tmp.name) as pdf:
+        with PdfPages(tmp_path) as pdf:
             if data is None or data.empty or not pid:
                 # Simple page indicating no data
-                fig, ax = plt.subplots(figsize=(8.5, 11))
+                fig, ax = plt.subplots(figsize=(14, 9.5))
                 ax.text(
                     0.5, 0.5,
                     "No data available for the selected player.",
@@ -889,155 +888,172 @@ def server(input, output, session):
                 ax.axis("off")
                 pdf.savefig(fig)
                 plt.close(fig)
-                return tmp.name
-
-            # 1) Usage pie
-            usage = compute_usage(data, pid)
-            colors = build_pitch_color_map(usage[PITCH_TYPE_COL].dropna().unique()) if not usage.empty else {}
-            fig1, ax1 = plt.subplots(figsize=(8, 6))
-            fig1.patch.set_facecolor("#f7f7f7")
-            ax1.set_facecolor("#f7f7f7")
-            if usage.empty:
-                ax1.text(0.5, 0.5, "No pitch usage data", ha="center", va="center", transform=ax1.transAxes)
-                ax1.axis("off")
             else:
-                labels = usage[PITCH_TYPE_COL].tolist()
-                pcts = usage["usage_pct"].values
-                c = [colors.get(pt, (0.5, 0.5, 0.5)) for pt in labels]
-                ax1.pie(
-                    pcts,
-                    labels=labels,
-                    colors=c,
-                    startangle=90,
-                    autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
-                    pctdistance=0.65,
-                    textprops={"fontsize": 10, "fontweight": "bold"},
-                )
-                ax1.set_title("Pitch Usage", fontsize=16, fontweight="bold")
-            pdf.savefig(fig1)
-            plt.close(fig1)
+                # Create a single landscape figure with 2x2 grid
+                fig, axes = plt.subplots(2, 2, figsize=(14, 9.5))
+                fig.patch.set_facecolor("#ffffff")
 
-            # 2) Location plot
-            fig2, ax2 = plt.subplots(figsize=(8, 6))
-            fig2.patch.set_facecolor("#f7f7f7")
-            ax2.set_facecolor("#f7f7f7")
-            loc = data[
-                data["PlateLocSide"].notna()
-                & data["PlateLocHeight"].notna()
-                & data[PITCH_TYPE_COL].notna()
-            ]
-            if loc.empty:
-                ax2.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax2.transAxes)
-                ax2.axis("off")
-            else:
-                ax2.add_patch(Rectangle(
-                    (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
-                    (ZONE_RIGHT - ZONE_LEFT) + 0.6,
-                    (ZONE_TOP - ZONE_BOTTOM) + 0.6,
-                    alpha=0.25
-                ))
-                ax2.add_patch(Rectangle(
-                    (ZONE_LEFT, ZONE_BOTTOM),
-                    ZONE_RIGHT - ZONE_LEFT,
-                    ZONE_TOP - ZONE_BOTTOM,
-                    fill=False,
-                    linewidth=2
-                ))
-                ax2.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
-                ax2.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
-                for pt, g in loc.groupby(PITCH_TYPE_COL):
-                    ax2.scatter(
-                        g["PlateLocSide"],
-                        g["PlateLocHeight"],
-                        s=35,
-                        alpha=0.8,
-                        color=colors.get(pt, (0.5, 0.5, 0.5)),
-                        label=pt,
+                # Get player name for title
+                player_name = format_display_name(data["Pitcher"].iloc[0]) if "Pitcher" in data.columns else "Unknown"
+                fig.suptitle(f"Pitch Report: {player_name}", fontsize=18, fontweight="bold", y=0.98)
+
+                ax_pie = axes[0, 0]
+                ax_loc = axes[0, 1]
+                ax_mov = axes[1, 0]
+                ax_table = axes[1, 1]
+
+                # Compute data
+                usage = compute_usage(data, pid)
+                colors = build_pitch_color_map(usage[PITCH_TYPE_COL].dropna().unique()) if not usage.empty else {}
+
+                # 1) Usage Pie on ax_pie
+                ax_pie.set_facecolor("#f7f7f7")
+                if usage.empty:
+                    ax_pie.text(0.5, 0.5, "No pitch usage data", ha="center", va="center", transform=ax_pie.transAxes)
+                    ax_pie.axis("off")
+                else:
+                    labels = usage[PITCH_TYPE_COL].tolist()
+                    pcts = usage["usage_pct"].values
+                    c = [colors.get(pt, (0.5, 0.5, 0.5)) for pt in labels]
+                    ax_pie.pie(
+                        pcts,
+                        labels=None,
+                        colors=c,
+                        startangle=90,
+                        autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
+                        pctdistance=0.65,
+                        textprops={"fontsize": 9, "fontweight": "bold"},
                     )
-                ax2.add_patch(home_plate_polygon(y_front=0.10))
-                ax2.set_xlim(-3, 3)
-                ax2.set_ylim(-0.5, 5)
-                ax2.set_aspect("equal", adjustable="box")
-                ax2.set_xlabel("PlateLocSide")
-                ax2.set_ylabel("PlateLocHeight")
-                ax2.set_title("Pitch Locations", fontsize=16, fontweight="bold")
-                ax2.grid(True, alpha=0.2)
-                ax2.legend(fontsize=8)
-            pdf.savefig(fig2)
-            plt.close(fig2)
+                    ax_pie.legend(labels, loc="center left", bbox_to_anchor=(0.95, 0.5), fontsize=9, frameon=False)
+                    ax_pie.set_title("Pitch Usage", fontsize=14, fontweight="bold")
 
-            # 3) Movement plot
-            fig3, ax3 = plt.subplots(figsize=(8, 6))
-            fig3.patch.set_facecolor("#f7f7f7")
-            ax3.set_facecolor("#f7f7f7")
-            mov = data[data[X_MOV].notna() & data[Y_MOV].notna() & data[PITCH_TYPE_COL].notna()]
-            if mov.empty:
-                ax3.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax3.transAxes)
-                ax3.axis("off")
-            else:
-                for pt, g in mov.groupby(PITCH_TYPE_COL):
-                    ax3.scatter(
-                        g[X_MOV], g[Y_MOV],
-                        s=25, alpha=0.75,
-                        color=colors.get(pt, (0.5, 0.5, 0.5)),
-                        label=pt,
+                # 2) Location Plot on ax_loc
+                ax_loc.set_facecolor("#f7f7f7")
+                loc = data[
+                    data["PlateLocSide"].notna()
+                    & data["PlateLocHeight"].notna()
+                    & data[PITCH_TYPE_COL].notna()
+                ]
+                if loc.empty:
+                    ax_loc.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax_loc.transAxes)
+                    ax_loc.axis("off")
+                else:
+                    ax_loc.add_patch(Rectangle(
+                        (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
+                        (ZONE_RIGHT - ZONE_LEFT) + 0.6,
+                        (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+                        alpha=0.25
+                    ))
+                    ax_loc.add_patch(Rectangle(
+                        (ZONE_LEFT, ZONE_BOTTOM),
+                        ZONE_RIGHT - ZONE_LEFT,
+                        ZONE_TOP - ZONE_BOTTOM,
+                        fill=False,
+                        linewidth=2
+                    ))
+                    ax_loc.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
+                    ax_loc.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
+                    for pt, g in loc.groupby(PITCH_TYPE_COL):
+                        ax_loc.scatter(
+                            g["PlateLocSide"],
+                            g["PlateLocHeight"],
+                            s=25,
+                            alpha=0.8,
+                            color=colors.get(pt, (0.5, 0.5, 0.5)),
+                            label=pt,
+                        )
+                    ax_loc.add_patch(home_plate_polygon(y_front=0.10))
+                    ax_loc.set_xlim(-3, 3)
+                    ax_loc.set_ylim(-0.5, 5)
+                    ax_loc.set_aspect("equal", adjustable="box")
+                    ax_loc.set_xlabel("PlateLocSide", fontsize=9)
+                    ax_loc.set_ylabel("PlateLocHeight", fontsize=9)
+                    ax_loc.set_title("Pitch Locations", fontsize=14, fontweight="bold")
+                    ax_loc.grid(True, alpha=0.2)
+                    ax_loc.legend(fontsize=7, loc="upper right", framealpha=0.9)
+
+                # 3) Movement Plot on ax_mov
+                ax_mov.set_facecolor("#f7f7f7")
+                mov = data[data[X_MOV].notna() & data[Y_MOV].notna() & data[PITCH_TYPE_COL].notna()]
+                if mov.empty:
+                    ax_mov.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax_mov.transAxes)
+                    ax_mov.axis("off")
+                else:
+                    for pt, g in mov.groupby(PITCH_TYPE_COL):
+                        ax_mov.scatter(
+                            g[X_MOV], g[Y_MOV],
+                            s=20, alpha=0.75,
+                            color=colors.get(pt, (0.5, 0.5, 0.5)),
+                            label=pt,
+                        )
+                    ax_mov.axhline(0, linewidth=1, color="#333333")
+                    ax_mov.axvline(0, linewidth=1, color="#333333")
+                    ax_mov.set_xlim(*MOV_XLIM)
+                    ax_mov.set_ylim(*MOV_YLIM)
+                    ax_mov.set_xlabel("Horizontal break (in)", fontsize=9)
+                    ax_mov.set_ylabel("Induced vertical break (in)", fontsize=9)
+                    ax_mov.set_title("Pitch Movements", fontsize=14, fontweight="bold")
+                    ax_mov.grid(True, alpha=0.25)
+                    ax_mov.legend(fontsize=7, loc="upper right", framealpha=0.9)
+
+                # 4) Summary Table on ax_table
+                ax_table.axis("off")
+                summary = compute_pitch_metrics(data, pid)
+                if summary is None or summary.empty:
+                    ax_table.text(0.5, 0.5, "No summary metrics available.", ha="center", va="center", fontsize=12)
+                else:
+                    out = summary.copy()
+                    out["max_velo"] = pd.to_numeric(out.get("max_velo"), errors="coerce").round(1)
+                    out["avg_velo"] = pd.to_numeric(out.get("avg_velo"), errors="coerce").round(1)
+                    out["spin_rate"] = pd.to_numeric(out.get("spin_rate"), errors="coerce").round(0)
+                    out["usage_pct"] = (out["usage_pct"] * 100).round(1)
+                    out["strike_pct"] = (out["strike_pct"] * 100).round(1)
+                    out["whiff_pct"] = (out["whiff_pct"] * 100).round(1)
+                    out["chase_pct"] = (out["chase_pct"] * 100).round(1)
+
+                    display_df = out.rename(columns={
+                        PITCH_TYPE_COL: "Pitch",
+                        "pitch_count": "Count",
+                        "usage_pct": "Usage%",
+                        "max_velo": "MaxV",
+                        "avg_velo": "AvgV",
+                        "spin_rate": "Spin",
+                        "strike_pct": "K%",
+                        "whiff_pct": "Whiff%",
+                        "chase_pct": "Chase%",
+                    })
+                    table_cols = ["Pitch", "Count", "Usage%", "MaxV", "AvgV", "Spin", "K%", "Whiff%", "Chase%"]
+                    display_df = display_df[table_cols]
+
+                    table = ax_table.table(
+                        cellText=display_df.values,
+                        colLabels=display_df.columns,
+                        loc="center",
+                        cellLoc="center",
                     )
-                ax3.axhline(0, linewidth=1)
-                ax3.axvline(0, linewidth=1)
-                ax3.set_xlim(*MOV_XLIM)
-                ax3.set_ylim(*MOV_YLIM)
-                ax3.set_xlabel("Horizontal break (in)")
-                ax3.set_ylabel("Induced vertical break (in)")
-                ax3.set_title("Pitch Movements", fontsize=16, fontweight="bold")
-                ax3.grid(True, alpha=0.25)
-                ax3.legend(fontsize=8)
-            pdf.savefig(fig3)
-            plt.close(fig3)
+                    table.auto_set_font_size(False)
+                    table.set_fontsize(8)
+                    table.scale(1.0, 1.5)
 
-            # 4) Usage table page
-            summary = compute_pitch_metrics(data, pid)
-            fig4, ax4 = plt.subplots(figsize=(8.5, 11))
-            ax4.axis("off")
-            if summary is None or summary.empty:
-                ax4.text(0.5, 0.5, "No summary metrics available.", ha="center", va="center", fontsize=14)
-            else:
-                out = summary.copy()
-                out["max_velo"] = pd.to_numeric(out.get("max_velo"), errors="coerce").round(1)
-                out["avg_velo"] = pd.to_numeric(out.get("avg_velo"), errors="coerce").round(1)
-                out["spin_rate"] = pd.to_numeric(out.get("spin_rate"), errors="coerce").round(0)
-                out["usage_pct"] = (out["usage_pct"] * 100).round(1)
-                out["strike_pct"] = (out["strike_pct"] * 100).round(1)
-                out["whiff_pct"] = (out["whiff_pct"] * 100).round(1)
-                out["chase_pct"] = (out["chase_pct"] * 100).round(1)
+                    # Style header row
+                    for key, cell in table.get_celld().items():
+                        if key[0] == 0:
+                            cell.set_text_props(fontweight="bold")
+                            cell.set_facecolor("#e0e0e0")
 
-                display_df = out.rename(columns={
-                    PITCH_TYPE_COL: "Pitch type",
-                    "pitch_count": "Count",
-                    "usage_pct": "Usage %",
-                    "max_velo": "Max Velo",
-                    "avg_velo": "Avg Velo",
-                    "spin_rate": "Spin Rate",
-                    "strike_pct": "Strike %",
-                    "whiff_pct": "Whiff %",
-                    "chase_pct": "Chase %",
-                })
-                cols = ["Pitch type", "Count", "Usage %", "Max Velo", "Avg Velo", "Spin Rate", "Strike %", "Whiff %", "Chase %"]
-                display_df = display_df[cols]
+                    ax_table.set_title("Pitch Summary Metrics", fontsize=14, fontweight="bold", pad=10)
 
-                table = ax4.table(
-                    cellText=display_df.values,
-                    colLabels=display_df.columns,
-                    loc="center",
-                )
-                table.auto_set_font_size(False)
-                table.set_fontsize(8)
-                table.scale(1.0, 1.3)
-                ax4.set_title("Pitch Summary Metrics", fontsize=16, fontweight="bold", pad=20)
+                # Apply tight layout with proper spacing
+                fig.tight_layout(rect=[0, 0, 1, 0.95], h_pad=3.0, w_pad=3.0)
 
-            pdf.savefig(fig4)
-            plt.close(fig4)
+                pdf.savefig(fig)
+                plt.close(fig)
 
-        return tmp.name
+        # Read the PDF as binary bytes and yield them, then clean up
+        with open(tmp_path, "rb") as f:
+            yield f.read()
+
+        os.remove(tmp_path)
 
 
 # ---------------------------------------------------------------------------
