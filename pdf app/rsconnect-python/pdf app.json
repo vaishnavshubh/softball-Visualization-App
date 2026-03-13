@@ -1,0 +1,12 @@
+{
+    "https://api.shinyapps.io": {
+        "server_url": "https://api.shinyapps.io",
+        "filename": "/Users/shubhvaishnav/Desktop/Cursor Repo/softball-Visualization-App-1/pdf app",
+        "app_url": "https://shubhvaishnav.shinyapps.io/softball-pdf-report/",
+        "app_id": "16888361",
+        "app_guid": null,
+        "title": "Softball-PDF-Report",
+        "app_mode": "python-shiny",
+        "app_store_version": 1
+    }
+}

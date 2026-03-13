@@ -27,6 +27,9 @@ from shiny import App, render, ui, reactive
 # Config / constants (mirrors app.py where needed)
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(APP_DIR, "static")
+
+PURDUE_LOGO_SRC = "PU-H-Full-Rev-RGB.png"
 
 FIG_SIZE = (3.6, 2.8)
 
@@ -325,22 +328,289 @@ def throws_to_short(throws: str) -> str:
 # UI
 # ---------------------------------------------------------------------------
 app_ui = ui.page_fluid(
-    ui.h2("Softball Pitch Dashboard (Uploaded CSV)"),
+    ui.tags.style("""
+        body {
+            background-color: #f3f3f3;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
 
-    ui.layout_sidebar(
-        ui.sidebar(
+        .sidebar .shiny-input-container,
+        .sidebar .filter-title {
+            font-weight: 900 !important;
+        }
+
+        .sidebar .shiny-input-container .form-check label.form-check-label {
+            font-weight: 400 !important;
+        }
+
+        /* Purdue header */
+        .top-header {
+            background-color: #000000;
+            border-bottom: 6px solid #DDB945;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            padding: 0 18px;
+            box-sizing: border-box;
+        }
+        .top-header .logo-wrap {
+            width: 160px;
+            display: flex;
+            align-items: center;
+        }
+        .top-header .logo-wrap img {
+            height: 40px;
+            width: auto;
+            display: block;
+        }
+        .top-header .title {
+            flex: 1;
+            text-align: center;
+            color: #DDB945;
+            font-size: 40px;
+            font-weight: 900;
+            letter-spacing: 0.5px;
+        }
+        .top-header .spacer {
+            width: 160px;
+        }
+
+        .layout-main {
+            display: flex;
+            width: 100%;
+            min-height: calc(100vh - 64px);
+        }
+
+        .sidebar {
+            width: 260px;
+            background-color: #ffffff;
+            border-right: 1px solid #d6d6d6;
+            padding: 16px 16px 20px 16px;
+            box-sizing: border-box;
+        }
+
+        .sidebar h4 {
+            margin: 0 0 12px 0;
+            font-size: 24px;
+            font-weight: 900;
+            text-align: center;
+        }
+
+        .main-area {
+            flex: 1;
+            padding: 16px 20px 22px 20px;
+            box-sizing: border-box;
+        }
+
+        .tabs-wrap .nav-tabs {
+            border-bottom: 1px solid #d6d6d6;
+            background: #ffffff;
+            padding: 8px 10px 0 10px;
+            border-radius: 10px 10px 0 0;
+        }
+
+        .tabs-wrap .nav-tabs .nav-link {
+            border: none;
+            color: #111111;
+            font-weight: 900;
+            padding: 10px 18px;
+            margin-right: 10px;
+            background: transparent;
+        }
+
+        .tabs-wrap .nav-tabs .nav-link.active {
+            color: #111111;
+            position: relative;
+        }
+
+        .tabs-wrap .nav-tabs .nav-link.active::after {
+            content: "";
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            bottom: -1px;
+            height: 3px;
+            background: #DDB945;
+        }
+
+        .panel {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            padding: 16px 16px 18px 16px;
+            min-height: calc(100vh - 140px);
+        }
+
+        .profile-title {
+            font-size: 24px;
+            font-weight: 900;
+            margin: 0 0 10px 0;
+            text-align: center;
+        }
+
+        .player-summary {
+            font-size: 20px;
+            font-weight: 800;
+            color: #333333;
+            margin: 0 0 14px 0;
+            text-align: center;
+        }
+
+        .grid-2x2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .card {
+            background: #f7f7f7;
+            border: 1px solid #d6d6d6;
+            border-radius: 10px;
+            padding: 10px;
+        }
+
+        .card-fixed {
+            min-height: 420px;
+        }
+
+        .legend-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            justify-content: center;
+            align-items: center;
+            margin: 8px 0 14px 0;
+            padding: 8px 14px;
+            border: 1px solid rgba(0,0,0,0.15);
+            border-radius: 8px;
+            background: #fff;
+            font-size: 13px;
+        }
+
+        /* Usage table styling */
+        .usage-table-wrap table,
+        .usage-table-wrap thead,
+        .usage-table-wrap tbody,
+        .usage-table-wrap tr,
+        .usage-table-wrap th,
+        .usage-table-wrap td,
+        .usage-table-wrap table.table,
+        .usage-table-wrap .table,
+        .usage-table-wrap .table > :not(caption) > * > * {
+            background-color: transparent !important;
+        }
+
+        .usage-table-wrap table {
+            width: auto !important;
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
+        }
+
+        /* Header */
+        .usage-table-wrap table.table thead th,
+        .usage-table-wrap .table thead th {
+            background: #111 !important;
+            color: #fff !important;
+            font-weight: 800 !important;
+            border: 1px solid #444 !important;
+            border-bottom: 2px solid #444 !important;
+            opacity: 1 !important;
+        }
+
+        /* Body cells grid */
+        .usage-table-wrap tbody td {
+            border: 1px solid #cfcfcf !important;
+            color: #111 !important;
+        }
+
+        /* Zebra striping */
+        .usage-table-wrap tbody tr:nth-child(odd) td {
+            background: #f3f3f3 !important;
+        }
+
+        .usage-table-wrap tbody tr:nth-child(even) td {
+            background: #ffffff !important;
+        }
+
+        .usage-table-wrap tbody tr:hover td {
+            background: #e9e9e9 !important;
+        }
+
+        .usage-table-wrap th,
+        .usage-table-wrap td {
+            padding: 3px 5px;
+            font-size: 11px;
+            line-height: 1.2;
+            vertical-align: middle;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .usage-table-wrap tbody tr {
+            height: 25px;
+        }
+
+        .usage-table-wrap th:nth-child(1),
+        .usage-table-wrap td:nth-child(1) { text-align: left;  width: 160px; padding-right: 4px; }
+        .usage-table-wrap th:nth-child(2),
+        .usage-table-wrap td:nth-child(2) { text-align: right; width: 70px; padding-left: 4px; }
+        .usage-table-wrap th:nth-child(3),
+        .usage-table-wrap td:nth-child(3) { text-align: right; width: 85px; }
+        .usage-table-wrap th:nth-child(4),
+        .usage-table-wrap td:nth-child(4) { text-align: right; width: 85px; }
+        .usage-table-wrap th:nth-child(5),
+        .usage-table-wrap td:nth-child(5) { text-align: right; width: 85px; }
+        .usage-table-wrap th:nth-child(6),
+        .usage-table-wrap td:nth-child(6) { text-align: right; width: 95px; }
+        .usage-table-wrap th:nth-child(7),
+        .usage-table-wrap td:nth-child(7) { text-align: right; width: 70px; }
+        .usage-table-wrap th:nth-child(8),
+        .usage-table-wrap td:nth-child(8) { text-align: right; width: 70px; }
+        .usage-table-wrap th:nth-child(9),
+        .usage-table-wrap td:nth-child(9) { text-align: right; width: 75px; }
+
+        .table-title {
+            font-size: 16px;
+            font-weight: 900;
+            margin: 6px 0 10px 0;
+            text-align: center;
+        }
+    """),
+
+    # Purdue header (logo left, title centered)
+    ui.tags.div(
+        ui.tags.div(
+            ui.tags.img(src=PURDUE_LOGO_SRC, alt="Purdue Logo"),
+            class_="logo-wrap",
+        ),
+        ui.tags.div("Softball Dashboard", class_="title"),
+        ui.tags.div(class_="spacer"),
+        class_="top-header",
+    ),
+
+    ui.tags.div(
+        ui.tags.div(
+            ui.tags.h4("Filters"),
             ui.input_file(
                 "file",
                 "Upload CSV (TrackMan schema)",
                 multiple=False,
                 accept=[".csv"],
             ),
-
             ui.input_select("player", "Player Name", choices={"": "—"}),
             ui.download_button("download_pdf", "Download PDF Report"),
-            width=300,
+            class_="sidebar",
         ),
-        ui.output_ui("main_tabs"),
+
+        ui.tags.div(
+            ui.output_ui("main_tabs"),
+            class_="main-area",
+        ),
+
+        class_="layout-main",
     ),
 )
 
@@ -567,6 +837,8 @@ def server(input, output, session):
             (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
             (ZONE_RIGHT - ZONE_LEFT) + 0.6,
             (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+            facecolor="#d9d9d9",
+            edgecolor="none",
             alpha=0.25
         ))
         ax.add_patch(Rectangle(
@@ -576,8 +848,8 @@ def server(input, output, session):
             fill=False,
             linewidth=2
         ))
-        ax.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
-        ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
+        ax.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1, color="#1f77b4")
+        ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1, color="#ff7f0e")
 
         for pt, g in loc.groupby(PITCH_TYPE_COL):
             ax.scatter(
@@ -626,8 +898,8 @@ def server(input, output, session):
                 color=colors.get(pt, (0.5, 0.5, 0.5))
             )
 
-        ax.axhline(0, linewidth=1)
-        ax.axvline(0, linewidth=1)
+        ax.axhline(0, linewidth=1, color="#777777")
+        ax.axvline(0, linewidth=1, color="#777777")
         ax.set_xlim(*MOV_XLIM)
         ax.set_ylim(*MOV_YLIM)
         ax.set_xlabel("Horizontal break (in)")
@@ -942,6 +1214,8 @@ def server(input, output, session):
                         (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
                         (ZONE_RIGHT - ZONE_LEFT) + 0.6,
                         (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+                        facecolor="#d9d9d9",
+                        edgecolor="none",
                         alpha=0.25
                     ))
                     ax_loc.add_patch(Rectangle(
@@ -951,8 +1225,8 @@ def server(input, output, session):
                         fill=False,
                         linewidth=2
                     ))
-                    ax_loc.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
-                    ax_loc.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
+                    ax_loc.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1, color="#1f77b4")
+                    ax_loc.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1, color="#ff7f0e")
                     for pt, g in loc.groupby(PITCH_TYPE_COL):
                         ax_loc.scatter(
                             g["PlateLocSide"],
@@ -986,8 +1260,8 @@ def server(input, output, session):
                             color=colors.get(pt, (0.5, 0.5, 0.5)),
                             label=pt,
                         )
-                    ax_mov.axhline(0, linewidth=1, color="#333333")
-                    ax_mov.axvline(0, linewidth=1, color="#333333")
+                    ax_mov.axhline(0, linewidth=1, color="#777777")
+                    ax_mov.axvline(0, linewidth=1, color="#777777")
                     ax_mov.set_xlim(*MOV_XLIM)
                     ax_mov.set_ylim(*MOV_YLIM)
                     ax_mov.set_xlabel("Horizontal break (in)", fontsize=9)
@@ -1035,11 +1309,17 @@ def server(input, output, session):
                     table.set_fontsize(8)
                     table.scale(1.0, 1.5)
 
-                    # Style header row
-                    for key, cell in table.get_celld().items():
-                        if key[0] == 0:
-                            cell.set_text_props(fontweight="bold")
-                            cell.set_facecolor("#e0e0e0")
+                    # Style table cells: header and zebra striping
+                    for (row, col), cell in table.get_celld().items():
+                        if row == 0:  # Header row
+                            cell.set_facecolor("#111111")
+                            cell.set_text_props(color="white", fontweight="bold")
+                        else:  # Body rows - zebra striping
+                            if row % 2 == 1:  # Odd rows
+                                cell.set_facecolor("#f3f3f3")
+                            else:  # Even rows
+                                cell.set_facecolor("#ffffff")
+                        cell.set_edgecolor("#cfcfcf")
 
                     ax_table.set_title("Pitch Summary Metrics", fontsize=14, fontweight="bold", pad=10)
 
@@ -1059,4 +1339,4 @@ def server(input, output, session):
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = App(app_ui, server)
+app = App(app_ui, server, static_assets=STATIC_DIR)
