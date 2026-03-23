@@ -355,7 +355,7 @@ def is_purdue_team(team_value: str) -> bool:
 
 # Pitch colors (consistent)
 PITCH_TYPE_FIXED_COLORS = {
-    "Fastball":  "#0B1F3A",
+    "Fastball":  "#475569",
     "Changeup":  "#D4A017",
     "Curveball": "#1B9E77",
     "Riseball":  "#1F77FF",
@@ -2418,7 +2418,8 @@ def server(input, output, session):
         OUTCOME_COLORS = {
             "StrikeCalled":         "#22c55e",
             "StrikeSwinging":       "#ef4444",
-            "Ball":                 "#94a3b8",
+            "Ball":                 "#475569",
+            "BallCalled":           "#475569",   
             "FoulBallFieldable":    "#f97316",
             "FoulBallNotFieldable": "#f97316",
             "InPlay":               "#3b82f6",
@@ -2452,21 +2453,25 @@ def server(input, output, session):
 
         def _draw_zone(ax, df):
             ax.set_facecolor("white")
-            ax.set_xlim(-2.2, 2.2)
+            ax.set_xlim(-1.5, 1.5)
             ax.set_ylim(-0.55, 4.55)
+            ax.set_clip_on(True)
+            ax.patch.set_zorder(1)
             ax.add_patch(Rectangle(
                 (-1.1, 1.2), 2.2, 2.6,
-                alpha=0.20, facecolor="#bfdbfe", edgecolor="none", zorder=0, clip_on=True
+                alpha=0.20, facecolor="#bfdbfe", edgecolor="none", zorder=2, clip_on=True
             ))
             ax.add_patch(Rectangle(
                 (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM,
                 fill=False, linewidth=2.0, edgecolor="#1e293b", zorder=2, clip_on=True
             ))
+
             mid_y = (ZONE_BOTTOM + ZONE_TOP) / 2
             ax.plot([ZONE_LEFT, ZONE_RIGHT], [mid_y, mid_y],
                     linestyle="--", linewidth=1.0, color="#60a5fa", alpha=0.6, zorder=1)
             ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP],
                     linestyle="--", linewidth=1.0, color="#f97316", alpha=0.6, zorder=1)
+
             if df is not None and not df.empty:
                 loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()].copy()
                 if not loc.empty:
@@ -2480,14 +2485,15 @@ def server(input, output, session):
                         edgecolors="white", linewidths=0.35,
                         zorder=3, clip_on=True
                     )
+
             ax.add_patch(home_plate_polygon(y_front=0.10))
             ax.set_xticks([])
             ax.set_yticks([])
             ax.tick_params(length=0)
             for spine in ax.spines.values():
                 spine.set_visible(True)
-                spine.set_edgecolor("#e2e8f0")
-                spine.set_linewidth(1.0)
+                spine.set_edgecolor("#c8d0da")
+                spine.set_linewidth(1.2)
 
         def _draw_info(ax, count_label, count_context, pur_s, opp_s, n_pur, n_opp):
             ax.set_facecolor("white")
@@ -2507,7 +2513,7 @@ def server(input, output, session):
                     ha="center", va="center",
                     fontsize=7, fontweight="bold", color="#64748b",
                     transform=ax.transAxes)
-            ax.text(0.5, 0.49, "Strike%",
+            ax.text(0.5, 0.49, "Strike Percentage",
                     ha="center", va="center",
                     fontsize=7, color="#94a3b8",
                     transform=ax.transAxes)
@@ -2540,23 +2546,22 @@ def server(input, output, session):
         n_rows   = len(COUNTS)
         BG       = "#e8edf2"
 
-        fig = plt.figure(figsize=(10.0, 3.6 * n_rows + 1.4), facecolor=BG)
-
         from matplotlib.gridspec import GridSpec
 
-        # Outer: legend row + data rows
+        fig = plt.figure(figsize=(10.0, 3.2 * n_rows + 0.8), facecolor=BG)
+
+        # Tiny legend row on top, data rows below
         gs_outer = GridSpec(2, 1, figure=fig,
-                            height_ratios=[0.04, 0.96],
+                            height_ratios=[0.01, 0.96],
                             hspace=0.0)
 
-        # Legend subplot
         ax_leg = fig.add_subplot(gs_outer[0, 0])
         ax_leg.set_facecolor(BG)
         ax_leg.axis("off")
         legend_items = [
             ("Called Strike",   "#22c55e"),
             ("Swinging Strike", "#ef4444"),
-            ("Ball",            "#94a3b8"),
+            ("Ball",            "#475569"),
             ("Foul",            "#f97316"),
             ("In Play",         "#3b82f6"),
         ]
@@ -2568,23 +2573,24 @@ def server(input, output, session):
         leg = ax_leg.legend(
             handles=legend_handles,
             loc="center", ncol=5, fontsize=8.5,
+            bbox_to_anchor=(0.5, 0.10),
             frameon=True, fancybox=False,
             edgecolor="#cbd5e1", facecolor="white",
             borderpad=0.5, handletextpad=0.4, columnspacing=0.9,
         )
         leg.get_frame().set_linewidth(0.8)
 
-        # Data rows inner GridSpec
+        # Data rows
         gs = GridSpec(
             nrows=n_rows, ncols=3,
             width_ratios=[0.55, 1.7, 1.7],
             height_ratios=[1] * n_rows,
-            wspace=0.03, hspace=0.04,
-            left=0.02, right=0.995,
-            top=0.945, bottom=0.008,
+            wspace=0.03, hspace=0.20,
+            left=0.015, right=0.985,
+            top=0.955, bottom=0.008,
         )
 
-        row_axes    = []
+        row_axes     = []
         first_pur_ax = None
         first_opp_ax = None
 
@@ -2615,7 +2621,7 @@ def server(input, output, session):
                 first_pur_ax = ax_pur
                 first_opp_ax = ax_opp
 
-        # Player names + card borders after layout is finalised
+        # Player names + card borders after layout
         fig.canvas.draw()
 
         pp = first_pur_ax.get_position()
@@ -2631,13 +2637,14 @@ def server(input, output, session):
                  transform=fig.transFigure)
 
         PAD = 0.005
-        for ax_left, ax_right in row_axes:
+        for i, (ax_left, ax_right) in enumerate(row_axes):
             pl = ax_left.get_position()
             pr = ax_right.get_position()
+            extra_top = 0.03 if i == 0 else 0.0   # extend first card to cover player name
             fig.add_artist(FancyBboxPatch(
                 (pl.x0 - PAD, pl.y0 - PAD),
                 (pr.x1 - pl.x0) + 2 * PAD,
-                pl.height + 2 * PAD,
+                pl.height + 2 * PAD + extra_top,
                 boxstyle="round,pad=0.003",
                 facecolor="white", edgecolor="#c8d0da",
                 linewidth=1.1, transform=fig.transFigure,
