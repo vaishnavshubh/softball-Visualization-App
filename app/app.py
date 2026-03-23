@@ -22,7 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.lines import Line2D
-from matplotlib.patches import Rectangle, Polygon
+from matplotlib.patches import Rectangle, Polygon, FancyBboxPatch
 
 import numpy as np
 import pandas as pd
@@ -355,18 +355,18 @@ def is_purdue_team(team_value: str) -> bool:
 
 # Pitch colors (consistent)
 PITCH_TYPE_FIXED_COLORS = {
-    "Fastball":  "#1F3A5F",
-    "Changeup":  "#E0B84C",
-    "Curveball": "#4E6E81",
-    "Riseball":  "#8FA6B3",
-    "Dropball":  "#5B6770",
-    "Screwball": "#A7B1B7",
-    "Offspeed":  "#C7CED3",
-    "Riser": "#8FA6B3",
-    "Rise":  "#8FA6B3",
-    "Drop":  "#5B6770",
+    "Fastball":  "#0B1F3A",
+    "Changeup":  "#D4A017",
+    "Curveball": "#1B9E77",
+    "Riseball":  "#1F77FF",
+    "Dropball":  "#D62728",
+    "Screwball": "#9467BD",
+    "Offspeed":  "#FF7F0E",
+    "Riser": "#1F77FF",
+    "Rise":  "#1F77FF",
+    "Drop":  "#D62728",
 }
-PITCH_TYPE_FALLBACK_COLORS = ["#6C7A89", "#9AA5AD", "#B8C2C8", "#D3D9DE"]
+PITCH_TYPE_FALLBACK_COLORS = ["#17BECF", "#8C564B", "#E377C2", "#7F7F7F"]
 
 
 # ---------------------------------------------------------------------------
@@ -385,68 +385,118 @@ def _has_any_text(series: pd.Series) -> bool:
     x = x[x.str.lower() != "nan"]
     return (x != "").any()
 
-def infer_session_type_for_purdue(df: pd.DataFrame) -> str:
-    """
-    Purdue-only rule per file:
-      Bullpen: Purdue pitching exists, Purdue batted-ball does not
-      Batting Practice: Purdue batted-ball exists, Purdue pitching does not
-      Scrimmage: both exist
-    """
+def infer_session_type_for_purdue(df, filename=""):
     if df is None or df.empty:
-        return "Unknown"
+        out = df.copy()
+        out["SessionType"] = "unknown"
+        out["SessionTypeReason"] = "Empty file"
+        return out
 
-    pur_pitch = df[df.get("PitcherTeam", "").astype("string").str.strip() == PURDUE_CODE] if "PitcherTeam" in df.columns else df.iloc[0:0]
-    pur_bat = df[df.get("BatterTeam", "").astype("string").str.strip() == PURDUE_CODE] if "BatterTeam" in df.columns else df.iloc[0:0]
+    out = df.copy()
 
-    has_pitch = False
-    if not pur_pitch.empty:
-        pitch_signals = []
-        if "TaggedPitchType" in pur_pitch.columns:
-            pitch_signals.append(_has_any_text(pur_pitch["TaggedPitchType"]))
-        if "RelSpeed" in pur_pitch.columns:
-            pitch_signals.append(_has_any_numeric(pur_pitch["RelSpeed"]))
-        if "PlateLocSide" in pur_pitch.columns:
-            pitch_signals.append(_has_any_numeric(pur_pitch["PlateLocSide"]))
-        if "PlateLocHeight" in pur_pitch.columns:
-            pitch_signals.append(_has_any_numeric(pur_pitch["PlateLocHeight"]))
-        has_pitch = any(pitch_signals) if pitch_signals else True
+    if "-bp-" in filename.lower():
+        out["SessionType"] = "batting_practice"
+        out["SessionTypeReason"] = "Filename contains -BP-"
+        return out
 
-    has_bat = False
-    if not pur_bat.empty:
-        bat_signals = []
-        if "ExitSpeed" in pur_bat.columns:
-            bat_signals.append(_has_any_numeric(pur_bat["ExitSpeed"]))
-        if "Angle" in pur_bat.columns:
-            bat_signals.append(_has_any_numeric(pur_bat["Angle"]))
-        if "Direction" in pur_bat.columns:
-            bat_signals.append(_has_any_numeric(pur_bat["Direction"]))
-        if "TaggedHitType" in pur_bat.columns:
-            bat_signals.append(_has_any_text(pur_bat["TaggedHitType"]))
-        if "PlayResult" in pur_bat.columns:
-            bat_signals.append(_has_any_text(pur_bat["PlayResult"]))
-        has_bat = any(bat_signals) if bat_signals else True
+    
 
-    if has_pitch and has_bat:
-        return "Scrimmage"
-    if has_pitch and not has_bat:
-        return "Bullpen"
-    if has_bat and not has_pitch:
-        return "Batting Practice"
-    return "Unknown"
+    notes_col = "Notes" if "Notes" in out.columns else None
+    batter_name_col = "Batter" if "Batter" in out.columns else None
+    batter_id_col = "BatterId" if "BatterId" in out.columns else None
+    pitcher_name_col = "Pitcher" if "Pitcher" in out.columns else None
+    pitcher_id_col = "PitcherId" if "PitcherId" in out.columns else None
+    batter_team_col = "BatterTeam" if "BatterTeam" in out.columns else None
+    pitcher_team_col = "PitcherTeam" if "PitcherTeam" in out.columns else None
 
-def apply_session_filter_for_team(df: pd.DataFrame, team: str, session_key: str) -> pd.DataFrame:
+    notes_clean = (
+        out[notes_col].fillna("").astype(str).str.strip().str.lower()
+        if notes_col else pd.Series("", index=out.index)
+    )
+
+    batter_clean = (
+        out[batter_name_col].apply(clean_player_name)
+        if batter_name_col else pd.Series("", index=out.index)
+    )
+
+    batter_has_purdue = contains_purdue(out[batter_team_col]) if batter_team_col else False
+    pitcher_has_purdue = contains_purdue(out[pitcher_team_col]) if pitcher_team_col else False
+    batter_has_non_purdue = contains_non_purdue(out[batter_team_col]) if batter_team_col else False
+    pitcher_has_non_purdue = contains_non_purdue(out[pitcher_team_col]) if pitcher_team_col else False
+
+    batter_has_data = False
+    if batter_name_col:
+        batter_has_data = batter_has_data or series_has_data(out[batter_name_col])
+    if batter_id_col:
+        batter_has_data = batter_has_data or series_has_data(out[batter_id_col])
+
+    pitcher_has_data = False
+    if pitcher_name_col:
+        pitcher_has_data = pitcher_has_data or series_has_data(out[pitcher_name_col])
+    if pitcher_id_col:
+        pitcher_has_data = pitcher_has_data or series_has_data(out[pitcher_id_col])
+
+    pitcher_name_empty = True if not pitcher_name_col else series_all_empty(out[pitcher_name_col])
+    pitcher_id_empty = True if not pitcher_id_col else series_all_empty(out[pitcher_id_col])
+
+    batter_is_active = batter_clean.isin(ACTIVE_ROSTER_2026).any()
+    batter_is_former = (
+        batter_clean.isin(KNOWN_FORMER_PLAYERS)
+        & ~batter_clean.isin(ACTIVE_ROSTER_2026)
+    ).any()
+
+    # 1. Bullpen
+    bullpen_by_notes = notes_clean.str.contains("bullpen", na=False).any()
+    bullpen_by_former_player = pitcher_has_purdue and batter_is_former
+
+    if bullpen_by_notes and pitcher_has_purdue:
+        out["SessionType"] = "bullpen"
+        out["SessionTypeReason"] = "Notes says bullpen"
+        return out
+
+    if bullpen_by_former_player:
+        out["SessionType"] = "bullpen"
+        out["SessionTypeReason"] = "Known former player batter with Purdue pitcher"
+        return out
+
+    # 2. Batting Practice
+    if batter_has_purdue and batter_has_data and pitcher_name_empty and pitcher_id_empty:
+        out["SessionType"] = "batting_practice"
+        out["SessionTypeReason"] = "Purdue batter only; no pitcher name or pitcher ID"
+        return out
+
+    # 3. Live
+    if (
+        (batter_has_purdue and pitcher_has_non_purdue) or
+        (batter_has_non_purdue and pitcher_has_purdue) or
+        (batter_has_non_purdue and pitcher_has_non_purdue)
+    ):
+        out["SessionType"] = "live"
+        out["SessionTypeReason"] = "External or non-Purdue matchup"
+        return out
+
+    # 4. Scrimmage
+    if batter_has_purdue and pitcher_has_purdue and pitcher_has_data and batter_is_active:
+        out["SessionType"] = "scrimmage"
+        out["SessionTypeReason"] = "Purdue vs Purdue, active roster"
+        return out
+
+    # 5. Unknown
+    out["SessionType"] = "unknown"
+    out["SessionTypeReason"] = "Could not classify"
+    return out
+
+
+def apply_session_filter_for_team(df, team, session_value):
     if df is None or df.empty:
         return df
-    if not is_purdue_team(team):
-        return df
 
-    if session_key == "bullpen":
-        return df[df["SessionType"] == "Bullpen"]
-    if session_key == "bp":
-        return df[df["SessionType"] == "Batting Practice"]
-    if session_key == "scrimmage":
-        return df[df["SessionType"] == "Scrimmage"]
-    return df
+    out = df.copy()
+
+    if session_value != "all":
+        out = out[out["SessionType"] == session_value]
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +603,68 @@ def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
 
     return df
 
+ACTIVE_ROSTER_2026 = {
+    "Rainey, Kendyl",
+    "Banks, Khloe",
+    "Franks, Kylie",
+    "Moore, Anna",
+    "Reefe, Delaney",
+    "Douglas, Bella",
+    "Krantz, Jensen",
+    "Condon, Maura",
+    "Fontenot, Bri",
+    "Moore, Malone",
+    "Campbell, Ashlynn",
+    "Bailey, Emma",
+    "Sosa, Gabriela",
+    "Waggoner, Haley",
+    "Gossett, Julia",
+    "Sarago, Kate",
+    "Perez, Brooke",
+    "Armstrong, Ansley",
+    "Painter, Haley",
+    "Polar, Moriah",
+}
+
+KNOWN_FORMER_PLAYERS = {
+    "Klochack, Kendall",
+    "McFadden, Olivia",
+    "Bailey, Kyndall",
+}
+
+PURDUE_TEAM_KEYS = {"PUR_BOI_SB"}
+
+def clean_player_name(x):
+    if pd.isna(x):
+        return ""
+    s = str(x).strip()
+    s = " ".join(s.split())
+    parts = [p.strip().title() for p in s.split(",")]
+    return ", ".join(parts)
+
+def series_has_data(s):
+    if s is None or len(s) == 0:
+        return False
+    return s.fillna("").astype(str).str.strip().ne("").any()
+
+def series_all_empty(s):
+    if s is None or len(s) == 0:
+        return True
+    return s.fillna("").astype(str).str.strip().eq("").all()
+
+def contains_purdue(series):
+    if series is None or len(series) == 0:
+        return False
+    vals = set(series.fillna("").astype(str).str.strip().str.upper())
+    return any(v in PURDUE_TEAM_KEYS for v in vals if v)
+
+def contains_non_purdue(series):
+    if series is None or len(series) == 0:
+        return False
+    vals = set(series.fillna("").astype(str).str.strip().str.upper())
+    vals = {v for v in vals if v}
+    return any(v not in PURDUE_TEAM_KEYS for v in vals)
+
 def build_pitch_color_map(pitch_types):
     out = {}
     unknown = sorted([p for p in pitch_types if pd.notna(p) and p not in PITCH_TYPE_FIXED_COLORS])
@@ -588,12 +700,31 @@ def format_display_name(raw_name: str) -> str:
         return f"{first.strip()} {last.strip()}"
     return s
 
+
+def is_valid_pitch_type(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip().str.lower()
+    return (
+        series.notna()
+        & s.ne("")
+        & s.ne("undefined")
+        & s.ne("other")
+        & s.ne("nan")
+    )
+
+
 def compute_usage(df: pd.DataFrame, pitcher_id) -> pd.DataFrame:
     if df is None or df.empty or pitcher_id is None:
         return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
-    d = df[(df["PitcherId"].astype(str) == str(pitcher_id)) & df[PITCH_TYPE_COL].notna()]
+
+    mask = (
+        (df["PitcherId"].astype(str) == str(pitcher_id)) &
+        is_valid_pitch_type(df[PITCH_TYPE_COL])
+    )
+    d = df[mask].copy()
+
     if d.empty:
         return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
+
     usage = (
         d[PITCH_TYPE_COL]
         .value_counts()
@@ -603,100 +734,6 @@ def compute_usage(df: pd.DataFrame, pitcher_id) -> pd.DataFrame:
     usage["usage_pct"] = usage["pitch_count"] / usage["pitch_count"].sum()
     return usage.sort_values("usage_pct", ascending=False).reset_index(drop=True)
 
-def compute_pitch_metrics(df: pd.DataFrame, pitcher_id):
-    """
-    Strike %:
-      (StrikeCalled + StrikeSwinging + Fouls + InPlay) / total pitches
-    Whiff %:
-      StrikeSwinging / swings
-      swings = StrikeSwinging + Fouls + InPlay
-    """
-    if df is None or df.empty or pitcher_id is None:
-        return pd.DataFrame()
-
-    required = {"PitcherId", PITCH_TYPE_COL, "PitchNo", "RelSpeed", "PitchCall", "PlateLocSide", "PlateLocHeight"}
-    if any(c not in df.columns for c in required):
-        return pd.DataFrame()
-
-    d = df[
-        (df["PitcherId"].astype(str) == str(pitcher_id)) &
-        df[PITCH_TYPE_COL].notna()
-    ].copy()
-
-    if d.empty:
-        return pd.DataFrame()
-
-    d["RelSpeed"] = pd.to_numeric(d["RelSpeed"], errors="coerce")
-    if "SpinRate" in d.columns:
-        d["SpinRate"] = pd.to_numeric(d["SpinRate"], errors="coerce")
-    else:
-        d["SpinRate"] = np.nan  # keeps the table stable even if missing
-
-    pc = d["PitchCall"].astype(str).str.strip()
-
-    STRIKE_EVENTS = {
-        "StrikeCalled", "StrikeSwinging",
-        "FoulBallFieldable", "FoulBallNotFieldable",
-        "InPlay"
-    }
-    SWING_EVENTS = {
-        "StrikeSwinging",
-        "FoulBallFieldable", "FoulBallNotFieldable",
-        "InPlay"
-    }
-
-    d["PlateLocSide"]   = pd.to_numeric(d["PlateLocSide"], errors="coerce")
-    d["PlateLocHeight"] = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
-
-    d["is_strike"] = pc.isin(STRIKE_EVENTS)
-    d["is_swing"]  = pc.isin(SWING_EVENTS)
-    d["is_whiff"]  = pc.eq("StrikeSwinging")
-
-    d["is_outside"] = (
-        (d["PlateLocSide"]   < ZONE_LEFT)  |
-        (d["PlateLocSide"]   > ZONE_RIGHT) |
-        (d["PlateLocHeight"] < ZONE_BOTTOM)|
-        (d["PlateLocHeight"] > ZONE_TOP)
-    )
-    d["is_chase"] = d["is_outside"] & d["is_swing"]
-
-    summary = (
-        d.groupby(PITCH_TYPE_COL, dropna=True)
-        .agg(
-            pitch_count=("PitchNo", "count"),
-            max_velo=("RelSpeed", "max"),
-            avg_velo=("RelSpeed", "mean"),
-            spin_rate=("SpinRate", "mean"),
-            strike_pct=("is_strike", "mean"),
-            swings=("is_swing", "sum"),
-            whiffs=("is_whiff", "sum"),
-            outside=("is_outside", "sum"),
-            chases=("is_chase", "sum"),
-        )
-        .reset_index()
-    )
-
-    summary["whiff_pct"] = np.where(
-        summary["swings"] > 0,
-        summary["whiffs"] / summary["swings"],
-        np.nan
-    )
-
-    summary["chase_pct"] = np.where(
-        summary["outside"] > 0,
-        summary["chases"] / summary["outside"],
-        np.nan
-    )
-
-    total = summary["pitch_count"].sum()
-    summary["usage_pct"] = summary["pitch_count"] / total if total else 0
-
-    return (
-        summary
-        .drop(columns=["swings", "whiffs", "outside", "chases"])
-        .sort_values("usage_pct", ascending=False)
-        .reset_index(drop=True)
-    )
 
 def throws_to_short(throws: str) -> str:
     if not throws:
@@ -721,36 +758,42 @@ def format_pct(x, digits=1):
 
 def filter_df_to_pitch_type(df: pd.DataFrame, pitch_type_value: str) -> pd.DataFrame:
     if df is None or df.empty:
-        return df
+        return pd.DataFrame()
     if pitch_type_value in (None, "", "all"):
         return df
     return df[df[PITCH_TYPE_COL].astype(str).str.strip() == str(pitch_type_value)].copy()
 
-def compute_comparison_metrics(df: pd.DataFrame) -> dict:
-    if df is None or df.empty:
-        return {
-            "pitch_count": 0,
-            "avg_velo": np.nan,
-            "max_velo": np.nan,
-            "velo_sd": np.nan,
-            "spin_rate": np.nan,
-            "spin_sd": np.nan,
-            "ivb_avg": np.nan,
-            "ivb_sd": np.nan,
-            "hb_avg": np.nan,
-            "hb_sd": np.nan,
-            "strike_pct": np.nan,
-            "whiff_pct": np.nan,
-            "chase_pct": np.nan,
-        }
 
-    d = df.copy()
+def compute_pitch_metrics(df: pd.DataFrame, pitcher_id):
+    if df is None or df.empty or pitcher_id is None:
+        return pd.DataFrame()
 
-    for c in ["RelSpeed", "SpinRate", "InducedVertBreak", "HorzBreak", "PlateLocSide", "PlateLocHeight"]:
-        if c in d.columns:
-            d[c] = pd.to_numeric(d[c], errors="coerce")
+    required = {
+        "PitcherId", PITCH_TYPE_COL, "PitchNo", "RelSpeed",
+        "PitchCall", "PlateLocSide", "PlateLocHeight"
+    }
+    if any(c not in df.columns for c in required):
+        return pd.DataFrame()
 
-    pc = d["PitchCall"].astype(str).str.strip() if "PitchCall" in d.columns else pd.Series("", index=d.index)
+    mask = (
+        (df["PitcherId"].astype(str) == str(pitcher_id)) &
+        is_valid_pitch_type(df[PITCH_TYPE_COL])
+    )
+    d = df[mask].copy()
+
+    if d.empty:
+        return pd.DataFrame()
+
+    d["RelSpeed"] = pd.to_numeric(d["RelSpeed"], errors="coerce")
+    d["PlateLocSide"] = pd.to_numeric(d["PlateLocSide"], errors="coerce")
+    d["PlateLocHeight"] = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+
+    if "SpinRate" in d.columns:
+        d["SpinRate"] = pd.to_numeric(d["SpinRate"], errors="coerce")
+    else:
+        d["SpinRate"] = np.nan
+
+    pc = d["PitchCall"].astype(str).str.strip()
 
     STRIKE_EVENTS = {
         "StrikeCalled", "StrikeSwinging",
@@ -762,38 +805,157 @@ def compute_comparison_metrics(df: pd.DataFrame) -> dict:
         "FoulBallFieldable", "FoulBallNotFieldable",
         "InPlay"
     }
-
-    d["is_strike"] = pc.isin(STRIKE_EVENTS)
-    d["is_swing"] = pc.isin(SWING_EVENTS)
-    d["is_whiff"] = pc.eq("StrikeSwinging")
-
-    d["is_outside"] = (
-        (d["PlateLocSide"] < ZONE_LEFT) |
-        (d["PlateLocSide"] > ZONE_RIGHT) |
-        (d["PlateLocHeight"] < ZONE_BOTTOM) |
-        (d["PlateLocHeight"] > ZONE_TOP)
-    )
-    d["is_chase"] = d["is_outside"] & d["is_swing"]
-
-    swings = d["is_swing"].sum()
-    outside = d["is_outside"].sum()
-
-    return {
-        "pitch_count": int(len(d)),
-        "avg_velo": d["RelSpeed"].mean(),
-        "max_velo": d["RelSpeed"].max(),
-        "velo_sd": d["RelSpeed"].std(),
-        "spin_rate": d["SpinRate"].mean(),
-        "spin_sd": d["SpinRate"].std(),
-        "ivb_avg": d["InducedVertBreak"].mean(),
-        "ivb_sd": d["InducedVertBreak"].std(),
-        "hb_avg": d["HorzBreak"].mean(),
-        "hb_sd": d["HorzBreak"].std(),
-        "strike_pct": d["is_strike"].mean(),
-        "whiff_pct": (d["is_whiff"].sum() / swings) if swings > 0 else np.nan,
-        "chase_pct": (d["is_chase"].sum() / outside) if outside > 0 else np.nan,
+    CONTACT_EVENTS = {
+        "FoulBallFieldable", "FoulBallNotFieldable",
+        "InPlay"
     }
 
+    d["is_strike"] = pc.isin(STRIKE_EVENTS)
+    d["is_called_strike"] = pc.eq("StrikeCalled")
+    d["is_swing"] = pc.isin(SWING_EVENTS)
+    d["is_whiff"] = pc.eq("StrikeSwinging")
+    d["is_contact"] = pc.isin(CONTACT_EVENTS)
+
+    loc_valid = d["PlateLocSide"].notna() & d["PlateLocHeight"].notna()
+
+    d["is_in_zone"] = (
+        loc_valid &
+        d["PlateLocSide"].between(ZONE_LEFT, ZONE_RIGHT, inclusive="both") &
+        d["PlateLocHeight"].between(ZONE_BOTTOM, ZONE_TOP, inclusive="both")
+    )
+
+    d["is_outside"] = loc_valid & ~d["is_in_zone"]
+
+    d["is_zone_swing"] = d["is_in_zone"] & d["is_swing"]
+    d["is_zone_contact"] = d["is_in_zone"] & d["is_contact"]
+
+    d["is_chase"] = d["is_outside"] & d["is_swing"]
+    d["is_chase_contact"] = d["is_outside"] & d["is_contact"]
+
+    summary = (
+        d.groupby(PITCH_TYPE_COL, dropna=True)
+        .agg(
+            pitch_count=("PitchNo", "count"),
+            max_velo=("RelSpeed", "max"),
+            avg_velo=("RelSpeed", "mean"),
+            spin_rate=("SpinRate", "mean"),
+            strike_pct=("is_strike", "mean"),
+            called_strike_n=("is_called_strike", "sum"),
+            swings=("is_swing", "sum"),
+            whiffs=("is_whiff", "sum"),
+            contacts=("is_contact", "sum"),
+            in_zone_n=("is_in_zone", "sum"),
+            zone_swings=("is_zone_swing", "sum"),
+            zone_contacts=("is_zone_contact", "sum"),
+            outside_n=("is_outside", "sum"),
+            chases=("is_chase", "sum"),
+            chase_contacts=("is_chase_contact", "sum"),
+        )
+        .reset_index()
+    )
+
+    total = summary["pitch_count"].sum()
+    summary["usage_pct"] = summary["pitch_count"] / total if total else 0
+
+    summary["called_strike_pct"] = np.where(
+        summary["pitch_count"] > 0,
+        summary["called_strike_n"] / summary["pitch_count"],
+        np.nan
+    )
+
+    summary["swing_pct"] = np.where(
+        summary["pitch_count"] > 0,
+        summary["swings"] / summary["pitch_count"],
+        np.nan
+    )
+
+    summary["swstr_pct"] = np.where(
+        summary["pitch_count"] > 0,
+        summary["whiffs"] / summary["pitch_count"],
+        np.nan
+    )
+
+    summary["whiff_pct"] = np.where(
+        summary["swings"] > 0,
+        summary["whiffs"] / summary["swings"],
+        np.nan
+    )
+
+    summary["zone_swing_pct"] = np.where(
+        summary["in_zone_n"] > 0,
+        summary["zone_swings"] / summary["in_zone_n"],
+        np.nan
+    )
+
+    summary["zone_contact_pct"] = np.where(
+        summary["zone_swings"] > 0,
+        summary["zone_contacts"] / summary["zone_swings"],
+        np.nan
+    )
+
+    summary["chase_pct"] = np.where(
+        summary["outside_n"] > 0,
+        summary["chases"] / summary["outside_n"],
+        np.nan
+    )
+
+    summary["chase_contact_pct"] = np.where(
+        summary["chases"] > 0,
+        summary["chase_contacts"] / summary["chases"],
+        np.nan
+    )
+
+    return (
+        summary.drop(
+            columns=[
+                "called_strike_n", "swings", "whiffs", "contacts",
+                "in_zone_n", "zone_swings", "zone_contacts",
+                "outside_n", "chases", "chase_contacts"
+            ]
+        )
+        .sort_values("usage_pct", ascending=False)
+        .reset_index(drop=True)
+    )
+
+def compute_comparison_metrics(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {
+            "pitch_count": 0,
+            "avg_velo": np.nan,
+            "max_velo": np.nan,
+            "velo_sd": np.nan,
+            "spin_rate": np.nan,
+            "ivb_avg": np.nan,
+            "hb_avg": np.nan,
+            "strike_pct": np.nan,
+            "whiff_pct": np.nan,
+            "swing_pct": np.nan,
+        }
+
+    pitch_count = len(df)
+
+    velo = pd.to_numeric(df["RelSpeed"], errors="coerce") if "RelSpeed" in df.columns else pd.Series(dtype=float)
+    spin = pd.to_numeric(df["SpinRate"], errors="coerce") if "SpinRate" in df.columns else pd.Series(dtype=float)
+    velo_sd = velo.std()
+    ivb = pd.to_numeric(df["InducedVertBreak"], errors="coerce") if "InducedVertBreak" in df.columns else pd.Series(dtype=float)
+    hb  = pd.to_numeric(df["HorzBreak"],        errors="coerce") if "HorzBreak"        in df.columns else pd.Series(dtype=float)
+    pc = df["PitchCall"].astype(str).str.strip() if "PitchCall" in df.columns else pd.Series("", index=df.index)
+    is_strike = pc.isin({"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"})
+    is_swing  = pc.isin({"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"})
+    is_whiff  = pc.eq("StrikeSwinging")
+
+    return {
+        "pitch_count": pitch_count,
+        "avg_velo":    velo.mean(),
+        "max_velo":    velo.max(),
+        "velo_sd":  velo_sd,
+        "spin_rate":   spin.mean(),
+        "ivb_avg":     ivb.mean(),  
+        "hb_avg":      hb.mean(),
+        "strike_pct":  is_strike.mean() if pitch_count > 0 else np.nan,
+        "swing_pct":   is_swing.mean()  if pitch_count > 0 else np.nan,
+        "whiff_pct":   (is_whiff.sum() / is_swing.sum()) if is_swing.sum() > 0 else np.nan,
+    }
 
 def get_pitcher_team_logo_text(team_code: str) -> str:
     if team_code == PURDUE_CODE:
@@ -960,6 +1122,8 @@ app_ui = ui.page_fluid(
             border-radius: 0 0 10px 10px;
             padding: 16px 16px 18px 16px;
             min-height: calc(100vh - 140px);
+            overflow: auto;
+            height: auto;
         }
 
         .profile-title {
@@ -1014,36 +1178,21 @@ app_ui = ui.page_fluid(
         }
 
         /* Usage table styling */
-        .usage-table-wrap table,
-        .usage-table-wrap thead,
-        .usage-table-wrap tbody,
-        .usage-table-wrap tr,
-        .usage-table-wrap th,
-        .usage-table-wrap td,
-        .usage-table-wrap table.table,
-        .usage-table-wrap .table,
-        .usage-table-wrap .table > :not(caption) > * > * {
-            background-color: transparent !important;
-        }
-
         .usage-table-wrap table {
-            width: auto !important;
-            table-layout: fixed !important;
+            width: 100% !important;
+            table-layout: auto !important;
             border-collapse: collapse !important;
         }
 
         /* Header */
-        .usage-table-wrap table.table thead th,
-        .usage-table-wrap .table thead th {
+        .usage-table-wrap thead th {
             background: #111 !important;
             color: #fff !important;
             font-weight: 800 !important;
             border: 1px solid #444 !important;
-            border-bottom: 2px solid #444 !important;
-            opacity: 1 !important;
         }
 
-        /* Body cells grid */
+        /* Body cells */
         .usage-table-wrap tbody td {
             border: 1px solid #cfcfcf !important;
             color: #111 !important;
@@ -1058,46 +1207,40 @@ app_ui = ui.page_fluid(
             background: #ffffff !important;
         }
 
-        /* Optional: subtle hover (remove if you don’t want it) */
-        .usage-table-wrap tbody tr:hover td {
-            background: #e9e9e9 !important;
-        }
-
+        /* Cell formatting */
         .usage-table-wrap th,
         .usage-table-wrap td {
-            padding: 3px 5px;
-            font-size: 11px;
-            line-height: 1.2;
-            vertical-align: middle;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            padding: 4px 6px;
+            font-size: 12px;
+            text-align: right;
         }
 
-
-        .usage-table-wrap tbody tr {
-            height: 25px;
+        /* First column */
+        .usage-table-wrap th:first-child,
+        .usage-table-wrap td:first-child {
+            text-align: left;
+            min-width: 140px;
+            padding-right: 6px;
         }
 
+        /* All other columns */
+        .usage-table-wrap th:not(:first-child),
+        .usage-table-wrap td:not(:first-child) {
+            text-align: right;
+            min-width: 88px;
+        }
 
-        .usage-table-wrap th:nth-child(1),
-        .usage-table-wrap td:nth-child(1) { text-align: left;  width: 160px; padding-right: 4px; }
-        .usage-table-wrap th:nth-child(2),
-        .usage-table-wrap td:nth-child(2) { text-align: right; width: 70px; padding-left: 4px; }
-        .usage-table-wrap th:nth-child(3),
-        .usage-table-wrap td:nth-child(3) { text-align: right; width: 85px; }
-        .usage-table-wrap th:nth-child(4),
-        .usage-table-wrap td:nth-child(4) { text-align: right; width: 85px; }
-        .usage-table-wrap th:nth-child(5),
-        .usage-table-wrap td:nth-child(5) { text-align: right; width: 85px; }
-        .usage-table-wrap th:nth-child(6),
-        .usage-table-wrap td:nth-child(6) { text-align: right; width: 95px; }
+        /* Slightly wider metrics */
         .usage-table-wrap th:nth-child(7),
-        .usage-table-wrap td:nth-child(7) { text-align: right; width: 70px; }
+        .usage-table-wrap td:nth-child(7),
         .usage-table-wrap th:nth-child(8),
-        .usage-table-wrap td:nth-child(8) { text-align: right; width: 70px; }
+        .usage-table-wrap td:nth-child(8),
         .usage-table-wrap th:nth-child(9),
-        .usage-table-wrap td:nth-child(9) { text-align: right; width: 75px; }
+        .usage-table-wrap td:nth-child(9),
+        .usage-table-wrap th:nth-child(10),
+        .usage-table-wrap td:nth-child(10) {
+            min-width: 95px;
+        }
 
         .table-title {
             font-size: 16px;
@@ -1123,7 +1266,7 @@ app_ui = ui.page_fluid(
         }
 
         .cmp-filter-row .shiny-input-container > label {
-            margin-bottom: 6 px;
+            margin-bottom: 6px;
             font-weight: 800;
         }
 
@@ -1208,7 +1351,6 @@ app_ui = ui.page_fluid(
             background: #f7f7f7;
             border: 1px solid #e1e1e1;
             border-radius: 12px;
-            overflow: hidden;
         }
 
         .cmp-stat-box {
@@ -1224,7 +1366,7 @@ app_ui = ui.page_fluid(
         .cmp-stat-label {
             font-size: 13px;
             color: #666666;
-            margin-bottom: 6 px;
+            margin-bottom: 6px;
             font-weight: 700;
         }
 
@@ -1329,7 +1471,8 @@ app_ui = ui.page_fluid(
             background: #ffffff;
             border: 1px solid #d9d9d9;
             border-radius: 10px;
-            overflow: hidden;
+            overflow: auto;
+            height: auto;
         }
 
         .team-summary-title{
@@ -1372,9 +1515,7 @@ app_ui = ui.page_fluid(
         .team-summary-table th:nth-child(2){width: 140px;}
         .team-summary-table th:nth-child(3){width: 140px;}
         .team-summary-table th:nth-child(4){width: 140px;}
-        .team-summary-table th:nth-child(5){width: 230px;}
-        .team-summary-table th:nth-child(6){width: 150px;}
-        .team-summary-table th:nth-child(7){width: 210px;}
+        .team-summary-table th:nth-child(5){width: 140px;}
 
         .team-summary-purdue{
             background: #f8f5e6 !important;
@@ -1440,8 +1581,9 @@ app_ui = ui.page_fluid(
                 choices={
                     "all": "All",
                     "bullpen": "Bullpen",
-                    "bp": "Batting Practice",
+                    "batting_practice": "Batting Practice",
                     "scrimmage": "Scrimmage",
+                    "live": "Live Game",
                 },
                 selected="all",
             ),
@@ -1635,12 +1777,14 @@ def server(input, output, session):
             if df.empty:
                 continue
 
-            df["SessionType"] = infer_session_type_for_purdue(df)
+            df = infer_session_type_for_purdue(df, filename=rel)
             dfs.append(df)
 
         if not dfs:
             return None
-        return pd.concat(dfs, ignore_index=True)
+
+        combined = pd.concat(dfs, ignore_index=True)
+        return combined
 
     @reactive.effect
     def _warn_unsupported_source():
@@ -1784,6 +1928,16 @@ def server(input, output, session):
             return f"{name} | {hand} {n_pitches} pitches"
         return f"{name} {n_pitches} pitches"
 
+    @reactive.calc
+    def session_player_type_warning():
+        session_val = input.session_type()
+        ptype = input.player_type()
+        if session_val == "bullpen" and ptype == "batter":
+            return "⚠️  Bullpen sessions only contain pitcher data. Switch Player Type to Pitcher to view the profile."
+        if session_val == "batting_practice" and ptype == "pitcher":
+            return "⚠️  Batting Practice sessions only contain batter data. Switch Player Type to Batter to view the profile."
+        return None
+
 
     # -----------------------------------------------------------------------
     # Comparison tab reactives
@@ -1797,7 +1951,7 @@ def server(input, output, session):
 
         teams = sorted([
             t for t in df["PitcherTeam"].dropna().astype(str).str.strip().unique().tolist()
-            if t and t != PURDUE_CODE
+            if t 
         ])
 
         choices = {t: TEAM_NAME_MAP.get(t, t) for t in teams}
@@ -1837,6 +1991,10 @@ def server(input, output, session):
             str(r.PitcherId): (format_display_name(r.Pitcher) or str(r.PitcherId))
             for r in lookup.itertuples(index=False)
         }
+
+        if str(opp_team) == PURDUE_CODE:
+            pid1 = input.player()
+            choices = {k: v for k, v in choices.items() if k != str(pid1)}
 
         ui.update_select(
             "cmp_opponent_pitcher",
@@ -2076,19 +2234,16 @@ def server(input, output, session):
         table = pd.DataFrame({
             "Metric": [
                 "Velocity STDEV",
-                "Spin Rate (RPM)",
                 "IVB Avg (in)",
                 "HB Avg (in)",
             ],
             pur_col: [
                 format_num(pm["velo_sd"]),
-                format_num(pm["spin_rate"], 0),
                 format_num(pm["ivb_avg"]),
                 format_num(pm["hb_avg"]),
             ],
             opp_col: [
                 format_num(om["velo_sd"]),
-                format_num(om["spin_rate"], 0),
                 format_num(om["ivb_avg"]),
                 format_num(om["hb_avg"]),
             ],
@@ -2253,14 +2408,13 @@ def server(input, output, session):
         opp = cmp_opponent_filtered()
 
         COUNTS = [
-            (0, 0, "0-0",  "FIRST PITCH"),
-            (3, 0, "3-0",  "HITTER'S COUNT"),
-            (0, 2, "0-2",  "PITCHER AHEAD"),
-            (1, 2, "1-2",  "PITCHER AHEAD"),
-            (2, 2, "2-2",  "EVEN COUNT"),
-            (3, 2, "3-2",  "FULL COUNT"),
+            (0, 0, "0-0", "FIRST PITCH"),
+            (3, 0, "3-0", "HITTER'S COUNT"),
+            (0, 2, "0-2", "PITCHER AHEAD"),
+            (1, 2, "1-2", "PITCHER AHEAD"),
+            (2, 2, "2-2", "EVEN COUNT"),
+            (3, 2, "3-2", "FULL COUNT"),
         ]
-
         OUTCOME_COLORS = {
             "StrikeCalled":         "#22c55e",
             "StrikeSwinging":       "#ef4444",
@@ -2270,7 +2424,6 @@ def server(input, output, session):
             "InPlay":               "#3b82f6",
         }
         DEFAULT_COLOR = "#cbd5e1"
-
         STRIKE_EVENTS = {
             "StrikeCalled", "StrikeSwinging",
             "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"
@@ -2284,180 +2437,216 @@ def server(input, output, session):
             if b_col is None or s_col is None:
                 return pd.DataFrame()
             mask = (
-                pd.to_numeric(d[b_col],   errors="coerce").eq(balls) &
+                pd.to_numeric(d[b_col], errors="coerce").eq(balls) &
                 pd.to_numeric(d[s_col], errors="coerce").eq(strikes)
             )
-            return d[mask].copy()
+            return d.loc[mask].copy()
 
         def _spct(df):
-            if df.empty or "PitchCall" not in df.columns:
+            if df is None or df.empty or "PitchCall" not in df.columns:
                 return None
             n = len(df)
-            return df["PitchCall"].astype(str).isin(STRIKE_EVENTS).sum() / n * 100 if n > 0 else None
+            if n == 0:
+                return None
+            return 100 * df["PitchCall"].astype(str).isin(STRIKE_EVENTS).sum() / n
 
         def _draw_zone(ax, df):
-            """Draw zone exactly like home tab, with outcome-colored dots."""
-            ax.set_facecolor("#f7f7f7")
-
-            # outer shadow zone — matches home tab
+            ax.set_facecolor("white")
+            ax.set_xlim(-2.2, 2.2)
+            ax.set_ylim(-0.55, 4.55)
             ax.add_patch(Rectangle(
-                (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
-                (ZONE_RIGHT - ZONE_LEFT) + 0.6,
-                (ZONE_TOP - ZONE_BOTTOM) + 0.6,
-                alpha=0.25, facecolor="#b0b0b0", edgecolor="none"
+                (-1.1, 1.2), 2.2, 2.6,
+                alpha=0.20, facecolor="#bfdbfe", edgecolor="none", zorder=0, clip_on=True
             ))
-
-            # strike zone box
             ax.add_patch(Rectangle(
-                (ZONE_LEFT, ZONE_BOTTOM),
-                ZONE_RIGHT - ZONE_LEFT,
-                ZONE_TOP - ZONE_BOTTOM,
-                fill=False, linewidth=2, edgecolor="black"
+                (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM,
+                fill=False, linewidth=2.0, edgecolor="#1e293b", zorder=2, clip_on=True
             ))
-
-            # horizontal midline — matches home tab dashed blue
-            ax.plot(
-                [ZONE_LEFT, ZONE_RIGHT],
-                [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2,
-                linestyle="--", linewidth=1, color="#1f77b4"
-            )
-
-            # vertical midline — matches home tab dashed orange
-            ax.plot(
-                [0, 0], [ZONE_BOTTOM, ZONE_TOP],
-                linestyle="--", linewidth=1, color="#ff7f0e"
-            )
-
-            # home plate
+            mid_y = (ZONE_BOTTOM + ZONE_TOP) / 2
+            ax.plot([ZONE_LEFT, ZONE_RIGHT], [mid_y, mid_y],
+                    linestyle="--", linewidth=1.0, color="#60a5fa", alpha=0.6, zorder=1)
+            ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP],
+                    linestyle="--", linewidth=1.0, color="#f97316", alpha=0.6, zorder=1)
+            if df is not None and not df.empty:
+                loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()].copy()
+                if not loc.empty:
+                    dot_colors = [
+                        OUTCOME_COLORS.get(str(pc).strip(), DEFAULT_COLOR)
+                        for pc in loc["PitchCall"].astype(str)
+                    ]
+                    ax.scatter(
+                        loc["PlateLocSide"], loc["PlateLocHeight"],
+                        s=70, alpha=0.90, color=dot_colors,
+                        edgecolors="white", linewidths=0.35,
+                        zorder=3, clip_on=True
+                    )
             ax.add_patch(home_plate_polygon(y_front=0.10))
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.tick_params(length=0)
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_edgecolor("#e2e8f0")
+                spine.set_linewidth(1.0)
 
-            # axis limits and style — matches home tab exactly
-            ax.set_xlim(-3, 3)
-            ax.set_ylim(-0.5, 5)
-            ax.set_aspect("equal", adjustable="box")
-            ax.grid(True, alpha=0.2)
+        def _draw_info(ax, count_label, count_context, pur_s, opp_s, n_pur, n_opp):
+            ax.set_facecolor("white")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
             ax.set_xticks([])
             ax.set_yticks([])
             for spine in ax.spines.values():
                 spine.set_visible(True)
-                spine.set_edgecolor("black")
-                spine.set_linewidth(1.5)
+                spine.set_edgecolor("#e2e8f0")
+                spine.set_linewidth(1.0)
+            ax.text(0.5, 0.80, count_label,
+                    ha="center", va="center",
+                    fontsize=26, fontweight="black", color="#1e293b",
+                    transform=ax.transAxes)
+            ax.text(0.5, 0.63, count_context,
+                    ha="center", va="center",
+                    fontsize=7, fontweight="bold", color="#64748b",
+                    transform=ax.transAxes)
+            ax.text(0.5, 0.49, "Strike%",
+                    ha="center", va="center",
+                    fontsize=7, color="#94a3b8",
+                    transform=ax.transAxes)
+            pur_txt = f"{pur_s:.0f}%" if pur_s is not None else "—"
+            opp_txt = f"{opp_s:.0f}%" if opp_s is not None else "—"
+            ax.text(0.26, 0.33, pur_txt,
+                    ha="center", va="center",
+                    fontsize=9, fontweight="bold", color="#111827",
+                    transform=ax.transAxes,
+                    bbox=dict(boxstyle="round,pad=0.38",
+                              facecolor="#DDB945", edgecolor="none"))
+            ax.text(0.74, 0.33, opp_txt,
+                    ha="center", va="center",
+                    fontsize=9, fontweight="bold", color="white",
+                    transform=ax.transAxes,
+                    bbox=dict(boxstyle="round,pad=0.38",
+                              facecolor="#1e293b", edgecolor="none"))
+            ax.text(0.26, 0.17, f"n={n_pur}",
+                    ha="center", va="center",
+                    fontsize=7, color="#94a3b8",
+                    transform=ax.transAxes)
+            ax.text(0.74, 0.17, f"n={n_opp}",
+                    ha="center", va="center",
+                    fontsize=7, color="#94a3b8",
+                    transform=ax.transAxes)
 
-            if df.empty:
-                ax.text(0.5, 0.5, "n = 0", ha="center", va="center",
-                        transform=ax.transAxes, fontsize=9, color="#94a3b8")
-                return
+        # ── build figure ───────────────────────────────────────────────────────
+        pur_name = cmp_purdue_name() or "Purdue Pitcher"
+        opp_name = cmp_opponent_name() or "Opponent Pitcher"
+        n_rows   = len(COUNTS)
+        BG       = "#e8edf2"
 
-            loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()].copy()
-            if loc.empty:
-                return
+        fig = plt.figure(figsize=(10.0, 3.6 * n_rows + 1.4), facecolor=BG)
 
-            dot_colors = [
-                OUTCOME_COLORS.get(str(pc).strip(), DEFAULT_COLOR)
-                for pc in (loc["PitchCall"].tolist() if "PitchCall" in loc.columns
-                           else [None] * len(loc))
-            ]
-            ax.scatter(
-                loc["PlateLocSide"], loc["PlateLocHeight"],
-                s=35, alpha=0.8, color=dot_colors, edgecolors="none"
-            )
+        from matplotlib.gridspec import GridSpec
 
-        n_rows = len(COUNTS)
-        fig, axes = plt.subplots(
-            n_rows, 2,
-            figsize=(20, n_rows * 5.0),
-            gridspec_kw={"wspace": 0.05, "hspace": 0.45}
-        )
-        fig.patch.set_facecolor("white")
+        # Outer: legend row + data rows
+        gs_outer = GridSpec(2, 1, figure=fig,
+                            height_ratios=[0.04, 0.96],
+                            hspace=0.0)
 
-        pur_name = cmp_purdue_name()
-        opp_name = cmp_opponent_name()
-
+        # Legend subplot
+        ax_leg = fig.add_subplot(gs_outer[0, 0])
+        ax_leg.set_facecolor(BG)
+        ax_leg.axis("off")
         legend_items = [
-            ("Called Strike",  "#22c55e"),
-            ("Swinging Strike","#ef4444"),
-            ("Ball",           "#94a3b8"),
-            ("Foul",           "#f97316"),
-            ("In Play",        "#3b82f6"),
+            ("Called Strike",   "#22c55e"),
+            ("Swinging Strike", "#ef4444"),
+            ("Ball",            "#94a3b8"),
+            ("Foul",            "#f97316"),
+            ("In Play",         "#3b82f6"),
         ]
         legend_handles = [
             plt.Line2D([0], [0], marker="o", color="w",
                        markerfacecolor=c, markersize=8, label=lbl)
             for lbl, c in legend_items
         ]
-        fig.legend(
+        leg = ax_leg.legend(
             handles=legend_handles,
-            loc="upper center",
-            ncol=len(legend_items),
-            fontsize=9,
-            frameon=True,
-            fancybox=False,
-            edgecolor="black",
-            facecolor="white",
-            bbox_to_anchor=(0.5, 0.995),
+            loc="center", ncol=5, fontsize=8.5,
+            frameon=True, fancybox=False,
+            edgecolor="#cbd5e1", facecolor="white",
+            borderpad=0.5, handletextpad=0.4, columnspacing=0.9,
+        )
+        leg.get_frame().set_linewidth(0.8)
+
+        # Data rows inner GridSpec
+        gs = GridSpec(
+            nrows=n_rows, ncols=3,
+            width_ratios=[0.55, 1.7, 1.7],
+            height_ratios=[1] * n_rows,
+            wspace=0.03, hspace=0.04,
+            left=0.02, right=0.995,
+            top=0.945, bottom=0.008,
         )
 
+        row_axes    = []
+        first_pur_ax = None
+        first_opp_ax = None
+
         for row_idx, (balls, strikes, count_label, count_context) in enumerate(COUNTS):
-            fig.patches.append(
-                plt.Rectangle(
-                    (0.01, (n_rows - row_idx - 1) / n_rows + 0.008),
-                    0.98,
-                    1 / n_rows - 0.016,
-                    transform=fig.transFigure,
-                    facecolor="white",
-                    edgecolor="#cbd5e1",
-                    linewidth=1.2,
-                    zorder=-1,
-                )
-            )
             pur_cdf = _get_count_df(pur, balls, strikes)
             opp_cdf = _get_count_df(opp, balls, strikes)
             pur_s   = _spct(pur_cdf)
             opp_s   = _spct(opp_cdf)
+            n_pur   = len(pur_cdf) if not pur_cdf.empty else 0
+            n_opp   = len(opp_cdf) if not opp_cdf.empty else 0
 
-            for col_idx, (ax, df, name) in enumerate(
-                zip(axes[row_idx], [pur_cdf, opp_cdf], [pur_name, opp_name])
-            ):
-                _draw_zone(ax, df)
-                ax.set_title(name, fontsize=9, fontweight="bold",
-                             color="#1e293b", pad=4)
-                n = len(df)
-    
-            ax_left = axes[row_idx][0]
-            pur_txt = f"{pur_s:.0f}%" if pur_s is not None else "—"
-            opp_txt = f"{opp_s:.0f}%" if opp_s is not None else "—"
+            ax_info = fig.add_subplot(gs[row_idx, 0])
+            ax_pur  = fig.add_subplot(gs[row_idx, 1])
+            ax_opp  = fig.add_subplot(gs[row_idx, 2])
 
-            ax_left.text(-0.95, 0.78, count_label,
-                         transform=ax_left.transAxes,
-                         ha="center", va="center",
-                         fontsize=18, fontweight="black", color="#1e293b")
-            ax_left.text(-0.95, 0.62, count_context,
-                         transform=ax_left.transAxes,
-                         ha="center", va="center",
-                         fontsize=7, fontweight="bold", color="#64748b")
-            ax_left.text(-0.95, 0.46, "Strike%:",
-                         transform=ax_left.transAxes,
-                         ha="center", fontsize=7, color="#94a3b8")
-            ax_left.text(-1.08, 0.30, pur_txt,
-                         transform=ax_left.transAxes,
-                         ha="center", va="center",
-                         fontsize=9, fontweight="bold", color="#1e293b",
-                         bbox=dict(boxstyle="round,pad=0.3",
-                                   facecolor="#DDB945", edgecolor="none"))
-            ax_left.text(-0.82, 0.30, opp_txt,
-                         transform=ax_left.transAxes,
-                         ha="center", va="center",
-                         fontsize=9, fontweight="bold", color="white",
-                         bbox=dict(boxstyle="round,pad=0.3",
-                                   facecolor="#1e293b", edgecolor="none"))
+            for ax in [ax_info, ax_pur, ax_opp]:
+                ax.set_facecolor("white")
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
 
-        fig.subplots_adjust(left=0.14, right=0.99, top=0.96, bottom=0.04,
-                            hspace=0.55, wspace=0.05)
+            _draw_info(ax_info, count_label, count_context,
+                       pur_s, opp_s, n_pur, n_opp)
+            _draw_zone(ax_pur, pur_cdf)
+            _draw_zone(ax_opp, opp_cdf)
+
+            row_axes.append((ax_info, ax_opp))
+            if row_idx == 0:
+                first_pur_ax = ax_pur
+                first_opp_ax = ax_opp
+
+        # Player names + card borders after layout is finalised
+        fig.canvas.draw()
+
+        pp = first_pur_ax.get_position()
+        po = first_opp_ax.get_position()
+        name_y = pp.y1 + 0.005
+        fig.text((pp.x0 + pp.x1) / 2, name_y, pur_name,
+                 ha="center", va="bottom",
+                 fontsize=11, fontweight="bold", color="#1e293b",
+                 transform=fig.transFigure)
+        fig.text((po.x0 + po.x1) / 2, name_y, opp_name,
+                 ha="center", va="bottom",
+                 fontsize=11, fontweight="bold", color="#1e293b",
+                 transform=fig.transFigure)
+
+        PAD = 0.005
+        for ax_left, ax_right in row_axes:
+            pl = ax_left.get_position()
+            pr = ax_right.get_position()
+            fig.add_artist(FancyBboxPatch(
+                (pl.x0 - PAD, pl.y0 - PAD),
+                (pr.x1 - pl.x0) + 2 * PAD,
+                pl.height + 2 * PAD,
+                boxstyle="round,pad=0.003",
+                facecolor="white", edgecolor="#c8d0da",
+                linewidth=1.1, transform=fig.transFigure,
+                zorder=0, clip_on=False,
+            ))
+
         return fig
 
-        
-
-
+    
     def _find_col(df, candidates):
         for c in candidates:
             if c in df.columns:
@@ -2490,7 +2679,7 @@ def server(input, output, session):
                 "whiff_pct": np.nan,
                 "chase_pct": np.nan,
                 "first_pitch_strike_pct": np.nan,
-                "spin_rate": np.nan,
+
             }
 
         d = df.copy()
@@ -2606,6 +2795,8 @@ def server(input, output, session):
             """Returns 'purdue', 'opp', or None if tied / both missing."""
             if pd.isna(pur_val) or pd.isna(opp_val):
                 return None
+            pur_val = round(float(pur_val) * 100, 1)
+            opp_val = round(float(opp_val) * 100, 1)
             if pur_val > opp_val:
                 return "purdue"
             if opp_val > pur_val:
@@ -2634,7 +2825,6 @@ def server(input, output, session):
             ("whiff_pct",              _format_pct(pur_m["whiff_pct"]),              _format_pct(opp_m["whiff_pct"]),              _winner(pur_m["whiff_pct"],              opp_m["whiff_pct"])),
             ("chase_pct",              _format_pct(pur_m["chase_pct"]),              _format_pct(opp_m["chase_pct"]),              _winner(pur_m["chase_pct"],              opp_m["chase_pct"])),
             ("first_pitch_strike_pct", _format_pct(pur_m["first_pitch_strike_pct"]), _format_pct(opp_m["first_pitch_strike_pct"]), _winner(pur_m["first_pitch_strike_pct"], opp_m["first_pitch_strike_pct"])),
-            ("spin_rate",              _format_num(pur_m["spin_rate"], 0),           _format_num(opp_m["spin_rate"], 0),           _winner(pur_m["spin_rate"],              opp_m["spin_rate"])),
         ]
 
         # ── legend chips ──
@@ -2669,7 +2859,6 @@ def server(input, output, session):
             "whiff_pct":              "Whiff %",
             "chase_pct":              "Chase %",
             "first_pitch_strike_pct": "First Pitch Strike %",
-            "spin_rate":              "Spin Rate",
         }
 
         opp_threat_label, opp_threat_pur, opp_threat_opp = "", "", ""
@@ -2677,7 +2866,7 @@ def server(input, output, session):
         for key, pur_val, opp_val, w in metrics:
             if w == "opp" and not pd.isna(pur_m[key]) and not pd.isna(opp_m[key]):
                 gap = abs(opp_m[key] - pur_m[key])
-                if gap > best_gap:
+                if gap > best_gap and round(gap * 100, 1) > 0:
                     best_gap = gap
                     opp_threat_label = metric_labels[key]
                     opp_threat_pur   = pur_val
@@ -2688,7 +2877,7 @@ def server(input, output, session):
         for key, pur_val, opp_val, w in metrics:
             if w == "purdue" and not pd.isna(pur_m[key]) and not pd.isna(opp_m[key]):
                 gap = abs(pur_m[key] - opp_m[key])
-                if gap > best_gap:
+                if gap > best_gap and round(gap * 100, 1) > 0:
                     best_gap = gap
                     pur_edge_label = metric_labels[key]
                     pur_edge_pur   = pur_val
@@ -2731,7 +2920,6 @@ def server(input, output, session):
                         ui.tags.th("Whiff %"),
                         ui.tags.th("Chase %"),
                         ui.tags.th("First Pitch Strike %"),
-                        ui.tags.th("Spin Rate"),
                     )
                 ),
                 ui.tags.tbody(
@@ -2748,7 +2936,10 @@ def server(input, output, session):
     def main_tabs():
         if date_range_invalid():
             return ui.div(
-                ui.tags.p("Start date must be on or before end date.", style="margin: 0; font-weight: 900;"),
+                ui.tags.p(
+                    "Start date must be on or before end date.",
+                    style="margin: 0; font-weight: 900;",
+                ),
                 class_="panel",
             )
 
@@ -2764,6 +2955,7 @@ def server(input, output, session):
                         class_="panel",
                     ),
                 ),
+
                 ui.nav_panel(
                     "Comparison",
                     ui.div(
@@ -2779,18 +2971,16 @@ def server(input, output, session):
                             class_="cmp-filter-row",
                         ),
                         ui.output_ui("cmp_team_summary_table"),
-
                         ui.output_ui("cmp_summary_cards"),
-
                         ui.div(
                             ui.div("Location by Count", class_="team-summary-title"),
-                            ui.output_plot("cmp_count_location", height="1900px"),
+                            ui.output_plot("cmp_count_location", height = "2600px"),
                             class_="team-summary-wrap",
                         ),
-
                         class_="panel",
                     ),
                 ),
+
                 ui.nav_panel(
                     "Development",
                     ui.div(
@@ -2806,9 +2996,7 @@ def server(input, output, session):
                         class_="panel",
                     ),
                 ),
-
             ),
-
             class_="tabs-wrap",
         )
 
@@ -2829,6 +3017,17 @@ def server(input, output, session):
         if not team:
             return ui.div("Select a team to view data.")
 
+        warning = session_player_type_warning()
+        if warning:
+            return ui.div(
+                warning,
+                style=(
+                    "padding:14px 18px; border-radius:8px; background:#fef9ec;"
+                    "border:1.5px solid #DDB945; color:#6b4e00; "
+                    "font-size:15px; font-weight:700; margin-top:12px;"
+                ),
+            )
+
         if input.player_type() != "pitcher":
             return ui.div("Batter view will be added next. Switch Player Type to Pitcher for now.")
 
@@ -2837,17 +3036,42 @@ def server(input, output, session):
             return ui.div("No pitcher data for the selected filters. Try another pitcher or date range.")
 
         return ui.div(
-            ui.div(
-                ui.div(ui.output_plot("pie"), class_="card"),
-                ui.div(ui.output_plot("location"), class_="card"),
-                ui.div(
-                    ui.div("Summary Table", class_="table-title"),
-                    ui.div(ui.output_table("usage_table"), class_="usage-table-wrap"),
-                    class_="card card-fixed",
+            ui.row(
+                ui.column(
+                    4,
+                    ui.card(
+                        ui.card_header("Pitch Usage"),
+                        ui.output_plot("pie", height="340px"),
+                    ),
                 ),
-                ui.div(ui.output_plot("movement"), class_="card card-fixed"),
-                class_="grid-2x2",
-            )
+                ui.column(
+                    4,
+                    ui.card(
+                        ui.card_header("Pitch Locations"),
+                        ui.output_plot("location", height="340px"),
+                    ),
+                ),
+                ui.column(
+                    4,
+                    ui.card(
+                        ui.card_header("Pitch Movements"),
+                        ui.output_plot("movement", height="340px"),
+                    ),
+                ),
+            ),
+
+            ui.row(
+                ui.column(
+                    12,
+                    ui.card(
+                        ui.card_header("Summary Table"),
+                        ui.div(
+                            ui.output_table("usage_table"),
+                            class_="usage-table-wrap",
+                        ),
+                    ),
+                ),
+            ),
         )
 
     # -----------------------------------------------------------------------
@@ -2883,8 +3107,6 @@ def server(input, output, session):
         )
         for t in ax.texts:
             t.set_fontsize(8)
-
-        ax.set_title("Pitch Usage", fontsize=16, fontweight="bold")
         return fig
 
     @output
@@ -2905,8 +3127,9 @@ def server(input, output, session):
         loc = data[
             data["PlateLocSide"].notna()
             & data["PlateLocHeight"].notna()
-            & data[PITCH_TYPE_COL].notna()
-        ]
+            & is_valid_pitch_type(data[PITCH_TYPE_COL])
+        ].copy()
+        
         if loc.empty:
             ax.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
@@ -2943,7 +3166,6 @@ def server(input, output, session):
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel("PlateLocSide")
         ax.set_ylabel("PlateLocHeight")
-        ax.set_title("Pitch Locations", fontsize=16, fontweight="bold")
         ax.grid(True, alpha=0.2)
         return fig
 
@@ -2962,7 +3184,7 @@ def server(input, output, session):
             ax.set_axis_off()
             return fig
 
-        mov = data[data[X_MOV].notna() & data[Y_MOV].notna() & data[PITCH_TYPE_COL].notna()]
+        mov = data[data[X_MOV].notna()& data[Y_MOV].notna()& is_valid_pitch_type(data[PITCH_TYPE_COL])].copy()
         if mov.empty:
             ax.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
@@ -2986,7 +3208,6 @@ def server(input, output, session):
         ax.set_ylim(*MOV_YLIM)
         ax.set_xlabel("Horizontal break (in)")
         ax.set_ylabel("Induced vertical break (in)")
-        ax.set_title("Pitch Movements", fontsize=16, fontweight="bold")
         ax.grid(True, alpha=0.25)
         
         # Build-in stats box text
@@ -2998,7 +3219,7 @@ def server(input, output, session):
             lines.append((pt, avg_hb, avg_ivb, color))
 
         box_text = "\n".join(
-            f"{pt}: Avg HB {avg_hb:+.1f}, Avg IVB {avg_ivb:+.1f}"
+            f"{pt}: HB {avg_hb:+.1f}, IVB {avg_ivb:+.1f}"
             for pt, avg_hb, avg_ivb, _ in lines
         )
         ax.text(
@@ -3021,8 +3242,7 @@ def server(input, output, session):
             return ui.div()
 
         order = (
-            df[PITCH_TYPE_COL]
-            .dropna()
+            df.loc[is_valid_pitch_type(df[PITCH_TYPE_COL]), PITCH_TYPE_COL]
             .astype(str)
             .value_counts()
             .index.tolist()
@@ -3032,7 +3252,7 @@ def server(input, output, session):
 
         items = []
         for pt in order:
-            if pt.lower() == "other":
+            if pt.lower() in {"other", "undefined"}:
                 continue
 
             color = cols.get(pt, "#777777")
@@ -3077,6 +3297,7 @@ def server(input, output, session):
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["Date"] = df["Date"].dt.normalize()
         df = df.dropna(subset=["Date", PITCH_TYPE_COL])
+        df = df[is_valid_pitch_type(df[PITCH_TYPE_COL])].copy()
 
         pc = df["PitchCall"].astype(str).str.strip()
 
@@ -3145,6 +3366,7 @@ def server(input, output, session):
         fig_w = 14
         fig_h = 5 * nrows   # grows with number of rows
         fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h))
+        fig.subplots_adjust(top=0.90, hspace=0.5, wspace=0.3)
         
 
         # Normalize axes to a flat list
@@ -3156,7 +3378,6 @@ def server(input, output, session):
             axes_list = [ax for row in axes for ax in (row if isinstance(row, (list, np.ndarray)) else [row])]
 
         fig.patch.set_facecolor("#ffffff")
-        fig.subplots_adjust(top=0.82, hspace=0.5, wspace=0.3)
 
         for i, pt in enumerate(pitch_types):
             ax = axes_list[i]
@@ -3199,8 +3420,7 @@ def server(input, output, session):
             Line2D([0], [0], color="#AAAAAA", linewidth=2.5, linestyle="--", marker="s", markersize=6, label="Whiff %"),
         ]
         fig.legend(handles=legend_handles, loc="upper center", ncol=2,
-           frameon=True, fancybox=True, edgecolor="#cccccc",
-           bbox_to_anchor=(0.5, 1.015), fontsize=11)
+           frameon=True, fancybox=True, edgecolor="#cccccc", fontsize=11)
 
         return fig
 
@@ -3209,30 +3429,49 @@ def server(input, output, session):
     def usage_table():
         data = pitcher_data()
         pid = input.player() if input.player_type() == "pitcher" else None
+        session_type = input.session_type()
 
-        cols = ["Pitch type", "Count", "Usage %", "Max Velo", "Avg Velo", "Spin Rate", "Strike %", "Whiff %", "Chase %"]
+        bullpen_cols = [
+            "Pitch type", "Count", "Usage %",
+            "Max Velo", "Avg Velo", "Spin Rate", "Strike %"
+        ]
+
+        live_scrimmage_cols = [
+            "Pitch type", "Count", "Usage %",
+            "Max Velo", "Avg Velo", "Spin Rate",
+            "Strike %", "Called Strike %",
+            "Swing %", "SwStrike %",
+            "Whiff %", "Zone Swing %",
+            "Zone Contact %", "Chase %",
+            "Chase Contact %"
+        ]
 
         if data is None or data.empty or not pid:
-            return pd.DataFrame(columns=cols)
+            return pd.DataFrame(
+                columns=bullpen_cols if session_type == "bullpen" else live_scrimmage_cols
+            )
 
         summary = compute_pitch_metrics(data, pid)
         if summary is None or summary.empty:
-            return pd.DataFrame(columns=cols)
+            return pd.DataFrame(
+                columns=bullpen_cols if session_type == "bullpen" else live_scrimmage_cols
+            )
 
         out = summary.copy()
 
-        # numeric formatting
         out["max_velo"] = pd.to_numeric(out.get("max_velo"), errors="coerce").round(1)
         out["avg_velo"] = pd.to_numeric(out.get("avg_velo"), errors="coerce").round(1)
         out["spin_rate"] = pd.to_numeric(out.get("spin_rate"), errors="coerce").round(0)
-        out["usage_pct"] = (out["usage_pct"] * 100).round(1).astype(str) + "%"
 
-        # percent formatting
-        out["strike_pct"] = (out["strike_pct"] * 100).round(1).astype(str) + "%"
-        out["whiff_pct"] = (out["whiff_pct"] * 100).round(1).astype(str) + "%"
-        out["chase_pct"]  = (out["chase_pct"]  * 100).round(1).astype(str) + "%"
+        pct_cols = [
+            "usage_pct", "strike_pct", "called_strike_pct",
+            "swing_pct", "swstr_pct", "whiff_pct",
+            "zone_swing_pct", "zone_contact_pct",
+            "chase_pct", "chase_contact_pct"
+        ]
+        for col in pct_cols:
+            out[col] = (pd.to_numeric(out.get(col), errors="coerce") * 100).round(1).astype(str) + "%"
 
-        # rename to display labels
         out = out.rename(columns={
             PITCH_TYPE_COL: "Pitch type",
             "pitch_count": "Count",
@@ -3241,12 +3480,23 @@ def server(input, output, session):
             "avg_velo": "Avg Velo",
             "spin_rate": "Spin Rate",
             "strike_pct": "Strike %",
+            "called_strike_pct": "Called Strike %",
+            "swing_pct": "Swing %",
+            "swstr_pct": "SwStrike %",
             "whiff_pct": "Whiff %",
-            "chase_pct": "Chase %"
+            "zone_swing_pct": "Zone Swing %",
+            "zone_contact_pct": "Zone Contact %",
+            "chase_pct": "Chase %",
+            "chase_contact_pct": "Chase Contact %",
         })
 
-        # enforce column order
-        return out[cols]
+        if session_type == "bullpen":
+            return out[bullpen_cols]
+
+        if session_type in {"live", "scrimmage"}:
+            return out[live_scrimmage_cols]
+
+        return out[live_scrimmage_cols]
+
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
-
