@@ -476,9 +476,9 @@ def infer_session_type_for_purdue(df, filename=""):
         return out
 
     # 4. Scrimmage
-    if batter_has_purdue and pitcher_has_purdue and pitcher_has_data and batter_is_active:
+    if batter_has_purdue and pitcher_has_purdue and pitcher_has_data and batter_has_data:
         out["SessionType"] = "scrimmage"
-        out["SessionTypeReason"] = "Purdue vs Purdue, active roster"
+        out["SessionTypeReason"] = "Purdue vs Purdue"
         return out
 
     # 5. Unknown
@@ -493,9 +493,13 @@ def apply_session_filter_for_team(df, team, session_value):
 
     out = df.copy()
 
-    if session_value != "all":
-        out = out[out["SessionType"] == session_value]
+    if session_value == "all":
+        return out
 
+    if not is_purdue_team(team) and session_value in {"bullpen", "batting_practice", "scrimmage"}:
+        return out
+
+    out = out[out["SessionType"] == session_value]
     return out
 
 
@@ -711,6 +715,68 @@ def is_valid_pitch_type(series: pd.Series) -> pd.Series:
         & s.ne("nan")
     )
 
+def compute_batter_stats(df: pd.DataFrame, batter_id) -> dict:
+    empty = dict(PA=0, AB=0, H=0, doubles=0, triples=0, HR=0,
+                 BB=0, K=0, HBP=0, BA=None, OBP=None, SLG=None,
+                 OPS=None, wOBA=None)
+    if df is None or df.empty or batter_id is None:
+        return empty
+
+    d = df[df["BatterId"].astype(str) == str(batter_id)].copy()
+    if d.empty:
+        return empty
+
+    pr = d["PlayResult"].astype(str).str.strip() if "PlayResult" in d.columns else pd.Series("", index=d.index)
+    pc = d["PitchCall"].astype(str).str.strip()  if "PitchCall"  in d.columns else pd.Series("", index=d.index)
+
+    # ── PA: count using PitchofPA == 1 (start of each new PA) ──────────────
+    if "PitchofPA" in d.columns:
+        PA = int((pd.to_numeric(d["PitchofPA"], errors="coerce") == 1).sum())
+    else:
+        # fallback: count terminal pitches
+        TERMINAL = {"Single","Double","Triple","HomeRun","Out","FieldersChoice",
+                    "Error","Walk","Strikeout","HitByPitch","SacrificeFly",
+                    "SacrificeBunt","CatcherInterference"}
+        PA = int((pr.isin(TERMINAL) | pc.eq("HitByPitch")).sum())
+
+    if PA == 0:
+        return empty
+
+    # ── Use terminal pitch rows for hit/walk/K counting ────────────────────
+    TERMINAL = {"Single","Double","Triple","HomeRun","Out","FieldersChoice",
+                "Error","Walk","Strikeout","HitByPitch","SacrificeFly",
+                "SacrificeBunt","CatcherInterference"}
+    t = d[pr.isin(TERMINAL) | pc.eq("HitByPitch")].copy()
+
+    if t.empty:
+        # PA exists but no PlayResult data — return PA only
+        return dict(PA=PA, AB=0, H=0, doubles=0, triples=0, HR=0,
+                    BB=0, K=0, HBP=0, BA=None, OBP=None, SLG=None,
+                    OPS=None, wOBA=None)
+
+    t_pr = t["PlayResult"].astype(str).str.strip() if "PlayResult" in t.columns else pd.Series("", index=t.index)
+    t_pc = t["PitchCall"].astype(str).str.strip()  if "PitchCall"  in t.columns else pd.Series("", index=t.index)
+
+    singles = int(t_pr.eq("Single").sum())
+    doubles = int(t_pr.eq("Double").sum())
+    triples = int(t_pr.eq("Triple").sum())
+    HR      = int(t_pr.eq("HomeRun").sum())
+    H       = singles + doubles + triples + HR
+    BB      = int(t_pr.eq("Walk").sum())
+    K       = int(t_pr.eq("Strikeout").sum())
+    HBP     = int((t_pr.eq("HitByPitch") | t_pc.eq("HitByPitch")).sum())
+    AB      = max(PA - BB - HBP, 0)
+    TB      = singles + 2*doubles + 3*triples + 4*HR
+
+    BA   = round(H / AB, 3)                    if AB  > 0 else None
+    OBP  = round((H + BB + HBP) / PA, 3)       if PA  > 0 else None
+    SLG  = round(TB / AB, 3)                   if AB  > 0 else None
+    OPS  = round(OBP + SLG, 3)                 if (OBP and SLG) else None
+    wOBA = round((0.690*BB + 0.720*HBP + 0.880*singles +
+                  1.242*doubles + 1.569*triples + 2.007*HR) / PA, 3) if PA > 0 else None
+
+    return dict(PA=PA, AB=AB, H=H, doubles=doubles, triples=triples, HR=HR,
+                BB=BB, K=K, HBP=HBP, BA=BA, OBP=OBP, SLG=SLG, OPS=OPS, wOBA=wOBA)
 
 def compute_usage(df: pd.DataFrame, pitcher_id) -> pd.DataFrame:
     if df is None or df.empty or pitcher_id is None:
@@ -1524,6 +1590,45 @@ app_ui = ui.page_fluid(
         .team-summary-opponent{
             background: #f8f8f8 !important;
         }
+
+        /* ---- Batter profile ---- */
+        .bat-line-wrap {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 10px;
+            overflow-x: auto;
+            margin-bottom: 14px;
+        }
+        .bat-line-wrap table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            min-width: 600px;
+        }
+        .bat-line-wrap thead th {
+            background: #111111 !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            font-weight: 800 !important;
+            text-align: center !important;
+            padding: 8px 4px !important;
+            border: 1px solid #333 !important;
+        }
+        .bat-line-wrap tbody td {
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+            padding: 10px 4px;
+            border: 1px solid #e0e0e0;
+            color: #111111;
+        }
+        .bat-line-wrap tbody td.bat-hl   { color: #185FA5; }
+        .bat-line-wrap tbody td.bat-good { color: #0F6E56; }
+        .bat-line-wrap tbody td.bat-warn { color: #854F0B; }
+        .bat-line-wrap tbody tr:nth-child(odd) td  { background: #f7f7f7; }
+        .bat-line-wrap tbody tr:nth-child(even) td { background: #ffffff; }
+
+        
     """),
 
     # Purdue header (logo left, title centered)
@@ -1878,6 +1983,35 @@ def server(input, output, session):
                 selected=list(choices.keys())[0] if choices else None,
                 session=session,
             )
+
+    @reactive.calc
+    def batter_data():
+        df = current_df()
+        team = input.team()
+        bid = input.player() if input.player_type() == "batter" else None
+        if df is None or not team or not bid:
+            return None
+        if "BatterTeam" in df.columns:
+            df = df[df["BatterTeam"].astype(str).str.strip() == str(team)]
+        df = apply_session_filter_for_team(df, team, input.session_type())
+        return df[df["BatterId"].astype(str) == str(bid)]
+
+    @reactive.calc
+    def batter_summary_text():
+        data = batter_data()
+        if data is None or data.empty:
+            return None
+        name = format_display_name(
+            data["Batter"].iloc[0] if "Batter" in data.columns else ""
+        ) or "Batter"
+        side = str(data["BatterSide"].iloc[0]).strip() \
+               if "BatterSide" in data.columns else ""
+        side = "" if side.lower() in ("nan", "") else side
+        pa   = compute_batter_stats(data, input.player())["PA"]
+        parts = [name, f"PA: {pa}"]
+        if side:
+            parts.append(f"Bats: {side}")
+        return " | ".join(parts)
 
     @reactive.calc
     def pitcher_data():
@@ -2955,14 +3089,12 @@ def server(input, output, session):
                 ui.nav_panel(
                     "Home",
                     ui.div(
-                        ui.div("Pitch Profile", class_="profile-title"),
-                        ui.div(ui.output_text("player_summary"), class_="player-summary"),
+                        ui.output_ui("home_profile_header"),
                         ui.output_ui("movement_legend"),
                         ui.output_ui("home_content"),
                         class_="panel",
                     ),
                 ),
-
                 ui.nav_panel(
                     "Comparison",
                     ui.div(
@@ -3017,67 +3149,102 @@ def server(input, output, session):
     def home_content():
         df = current_df()
         team = input.team()
-
         if df is None or df.empty:
             return ui.div("No data found for the selected season and date range.")
-
         if not team:
             return ui.div("Select a team to view data.")
 
         warning = session_player_type_warning()
         if warning:
+            return ui.div(warning, style=(
+                "padding:14px 18px; border-radius:8px; background:#fef9ec;"
+                "border:1.5px solid #DDB945; color:#6b4e00;"
+                "font-size:15px; font-weight:700; margin-top:12px;"
+            ))
+
+        if input.player_type() == "batter":
+            data = batter_data()
+            if data is None or data.empty:
+                return ui.div(
+                    "No batter data for the selected filters.",
+                    style="text-align:center;margin-top:30px;color:#666;",
+                )
+            session  = input.session_type()
+            is_bp    = (session == "batting_practice")
+            bot_plot = "batter_ev_dist_plot" if is_bp else "batter_radar_plot"
+            bot_title = "Exit Velo Distribution" if is_bp else "Plate Discipline"
+            PLOT_H = "340px"
+            SPRAY_H = "260px"
+            LOC_H = "670px"
+
             return ui.div(
-                warning,
-                style=(
-                    "padding:14px 18px; border-radius:8px; background:#fef9ec;"
-                    "border:1.5px solid #DDB945; color:#6b4e00; "
-                    "font-size:15px; font-weight:700; margin-top:12px;"
+                ui.output_ui("batter_batting_line"),
+                ui.div(
+                    ui.div(
+                        ui.div("Pitch Location by Result", style=(
+                            "font-size:13px;font-weight:700;color:#444;"
+                            "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                            "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                        )),
+                        ui.output_plot("batter_location_plot", height=LOC_H),
+                        class_="card",
+                    ),
+                    ui.div(
+                        ui.div(
+                            ui.div("Spray Chart", style=(
+                                "font-size:13px;font-weight:700;color:#444;"
+                                "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                                "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                            )),
+                            ui.output_plot("batter_spray_plot", height=SPRAY_H),
+                            class_="card",
+                        ),
+                        ui.div(
+                            ui.div(
+                                ui.div(
+                                    ui.div("Exit Velo vs. Launch Angle", style=(
+                                        "font-size:13px;font-weight:700;color:#444;"
+                                        "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                                        "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                                    )),
+                                    ui.output_plot("batter_ev_la_plot", height=PLOT_H),
+                                    class_="card",
+                                ),
+                                ui.div(
+                                    ui.div(bot_title, style=(
+                                        "font-size:13px;font-weight:700;color:#444;"
+                                        "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                                        "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                                    )),
+                                    ui.output_plot(bot_plot, height=PLOT_H),
+                                    class_="card",
+                                ),
+                                style="display:grid;grid-template-columns:1fr 1fr;gap:14px;",
+                            ),
+                        ),
+                        style="display:flex;flex-direction:column;gap:14px;",
+                    ),
+                    style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;",
                 ),
             )
 
-        if input.player_type() != "pitcher":
-            return ui.div("Batter view will be added next. Switch Player Type to Pitcher for now.")
+        
 
+        # Pitcher profile — unchanged
         data = pitcher_data()
         if data is None or data.empty:
-            return ui.div("No pitcher data for the selected filters. Try another pitcher or date range.")
-
+            return ui.div("No pitcher data for the selected filters.")
         return ui.div(
             ui.row(
-                ui.column(
-                    4,
-                    ui.card(
-                        ui.card_header("Pitch Usage"),
-                        ui.output_plot("pie", height="340px"),
-                    ),
-                ),
-                ui.column(
-                    4,
-                    ui.card(
-                        ui.card_header("Pitch Locations"),
-                        ui.output_plot("location", height="340px"),
-                    ),
-                ),
-                ui.column(
-                    4,
-                    ui.card(
-                        ui.card_header("Pitch Movements"),
-                        ui.output_plot("movement", height="340px"),
-                    ),
-                ),
+                ui.column(4, ui.card(ui.card_header("Pitch Usage"),     ui.output_plot("pie",      height="340px"))),
+                ui.column(4, ui.card(ui.card_header("Pitch Locations"), ui.output_plot("location", height="340px"))),
+                ui.column(4, ui.card(ui.card_header("Pitch Movements"), ui.output_plot("movement", height="340px"))),
             ),
-
             ui.row(
-                ui.column(
-                    12,
-                    ui.card(
-                        ui.card_header("Summary Table"),
-                        ui.div(
-                            ui.output_table("usage_table"),
-                            class_="usage-table-wrap",
-                        ),
-                    ),
-                ),
+                ui.column(12, ui.card(
+                    ui.card_header("Summary Table"),
+                    ui.div(ui.output_table("usage_table"), class_="usage-table-wrap"),
+                )),
             ),
         )
 
@@ -3504,6 +3671,582 @@ def server(input, output, session):
             return out[live_scrimmage_cols]
 
         return out[live_scrimmage_cols]
+
+    # ── dynamic home tab header ──────────────────────────────────────────────
+    @output
+    @render.ui
+    def home_profile_header():
+        if input.player_type() == "pitcher":
+            return ui.div(
+                ui.div("Pitcher Profile", class_="profile-title"),
+                ui.div(ui.output_text("player_summary"), class_="player-summary"),
+            )
+        txt = batter_summary_text()
+        return ui.div(
+            ui.div("Batter Profile", class_="profile-title"),
+            ui.div(txt or "Select a batter to view profile", class_="player-summary"),
+        )
+
+    # ── batting line table ───────────────────────────────────────────────────
+    @output
+    @render.ui
+    def batter_batting_line():
+        data = batter_data()
+        bid  = input.player() if input.player_type() == "batter" else None
+        if data is None or data.empty or not bid:
+            return ui.div()
+        s       = compute_batter_stats(data, bid)
+        session = input.session_type()
+        is_bp   = (session == "batting_practice")
+
+        def fmt(v):
+            return "—" if v is None else f".{int(round(v*1000)):03d}"
+        def cell(v, cls=""):
+            return ui.tags.td(str(v), class_=cls)
+
+        if is_bp:
+            headers = ["AB","H","2B","3B","HR","BA","SLG"]
+            row = ui.tags.tr(
+                cell(s["AB"]), cell(s["H"]),
+                cell(s["doubles"]), cell(s["triples"]),
+                cell(s["HR"],        cls="bat-good"),
+                cell(fmt(s["BA"]),   cls="bat-hl"),
+                cell(fmt(s["SLG"]),  cls="bat-hl"),
+            )
+        else:
+            headers = ["PA","AB","H","2B","3B","HR","BB","K","HBP",
+                       "BA","OBP","SLG","OPS","wOBA"]
+            row = ui.tags.tr(
+                cell(s["PA"]), cell(s["AB"]), cell(s["H"]),
+                cell(s["doubles"]), cell(s["triples"]),
+                cell(s["HR"],            cls="bat-good"),
+                cell(s["BB"]),
+                cell(s["K"],             cls="bat-warn"),
+                cell(s["HBP"]),
+                cell(fmt(s["BA"]),       cls="bat-hl"),
+                cell(fmt(s["OBP"]),      cls="bat-hl"),
+                cell(fmt(s["SLG"]),      cls="bat-hl"),
+                cell(fmt(s["OPS"]),      cls="bat-good"),
+                cell(fmt(s["wOBA"]),     cls="bat-good"),
+            )
+
+        table = ui.tags.table(
+            ui.tags.thead(ui.tags.tr(*[ui.tags.th(h) for h in headers])),
+            ui.tags.tbody(row),
+        )
+        return ui.div(table, class_="bat-line-wrap")
+
+    # ── pitch location heatmap ───────────────────────────────────────────────
+    @output
+    @render.plot
+    def batter_location_plot():
+        data = batter_data()
+        bid = input.player() if input.player_type() == "batter" else None
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+        ax.set_box_aspect(1)
+
+        SWING_EVENTS = {
+            "StrikeSwinging",
+            "FoulBallFieldable",
+            "FoulBallNotFieldable",
+            "InPlay",
+        }
+        CONTACT_EVENTS = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        DOT_COLORS = {
+            "StrikeCalled": "#F5A623",
+            "Ball": "#F5A623",
+            "BallCalled": "#F5A623",
+            "StrikeSwinging": "#E24B4A",
+            "FoulBallFieldable": "#7bafd4",
+            "FoulBallNotFieldable": "#7bafd4",
+            "InPlay": "#1D9E75",
+        }
+
+        zw = (ZONE_RIGHT - ZONE_LEFT) / 3
+        zh = (ZONE_TOP - ZONE_BOTTOM) / 3
+        col_edges = [ZONE_LEFT + i * zw for i in range(4)]
+        row_edges = [ZONE_BOTTOM + i * zh for i in range(4)]
+
+        pitcher_hand = ""
+        total_pitches = 0
+        total_swings = 0
+        total_contact = 0
+
+        if data is not None and not data.empty and bid:
+            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+
+            for c in ["PlateLocSide", "PlateLocHeight"]:
+                d[c] = pd.to_numeric(d[c], errors="coerce")
+            d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
+
+            if "PitcherThrows" in d.columns:
+                pt = d["PitcherThrows"].dropna().astype(str).str.strip()
+                if not pt.empty:
+                    val = pt.iloc[0].lower()
+                    pitcher_hand = "RHP" if "right" in val else "LHP" if "left" in val else ""
+
+            if "PitchCall" not in d.columns:
+                d["PitchCall"] = ""
+            pc = d["PitchCall"].astype(str).str.strip()
+
+            total_pitches = len(d)
+            total_swings = int(pc.isin(SWING_EVENTS).sum())
+            total_contact = int(pc.isin(CONTACT_EVENTS).sum())
+
+            d["is_in_zone"] = (
+                d["PlateLocSide"].between(ZONE_LEFT, ZONE_RIGHT)
+                & d["PlateLocHeight"].between(ZONE_BOTTOM, ZONE_TOP)
+            )
+
+            shadow_pad_x = 0.35
+            shadow_pad_y = 0.30
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT - shadow_pad_x, ZONE_BOTTOM - shadow_pad_y),
+                (ZONE_RIGHT - ZONE_LEFT) + 2 * shadow_pad_x,
+                (ZONE_TOP - ZONE_BOTTOM) + 2 * shadow_pad_y,
+                facecolor="#edf4ee",
+                edgecolor="none",
+                zorder=0,
+            ))
+
+            for row_i in range(3):
+                for col_i in range(3):
+                    x0 = col_edges[col_i]
+                    x1 = col_edges[col_i + 1]
+                    y0 = row_edges[row_i]
+                    y1 = row_edges[row_i + 1]
+                    cx = (x0 + x1) / 2
+                    cy = (y0 + y1) / 2
+
+                    mask = (
+                        d["PlateLocSide"].between(x0, x1)
+                        & d["PlateLocHeight"].between(y0, y1)
+                    )
+                    cell_d = d[mask]
+                    n_cell = len(cell_d)
+                    n_swing = int(pc[mask].isin(SWING_EVENTS).sum())
+
+                    if n_cell == 0:
+                        cell_bg = "#f5f5f5"
+                    else:
+                        swing_pct = n_swing / n_cell
+                        if swing_pct >= 0.75:
+                            cell_bg = "#c0392b"
+                        elif swing_pct >= 0.50:
+                            cell_bg = "#f0b000"
+                        elif swing_pct >= 0.25:
+                            cell_bg = "#f5dfb3"
+                        else:
+                            cell_bg = "#ffffff"
+
+                    ax.add_patch(Rectangle(
+                        (x0, y0), zw, zh,
+                        facecolor=cell_bg,
+                        edgecolor="#999999",
+                        linewidth=1.2,
+                        zorder=2,
+                    ))
+
+                    if n_cell == 0:
+                        ax.text(
+                            cx, cy, "—",
+                            ha="center", va="center",
+                            fontsize=13, color="#aaaaaa", zorder=3
+                        )
+                        continue
+
+                    swing_pct = n_swing / n_cell
+                    pct_txt = f"{int(round(swing_pct * 100))}%"
+                    frac_txt = f"{n_swing}/{n_cell}"
+
+                    txt_color = "#ffffff" if swing_pct >= 0.50 else "#222222"
+                    sub_color = "#ffe0db" if swing_pct >= 0.75 else "#666666"
+
+                    ax.text(
+                        cx, cy + zh * 0.16, pct_txt,
+                        ha="center", va="center",
+                        fontsize=16, fontweight="bold",
+                        color=txt_color, zorder=3,
+                    )
+                    ax.text(
+                        cx, cy - zh * 0.10, frac_txt,
+                        ha="center", va="center",
+                        fontsize=10,
+                        color=sub_color if swing_pct >= 0.50 else "#666666",
+                        zorder=3,
+                    )
+
+            outside = d[~d["is_in_zone"]].copy()
+            if not outside.empty:
+                for _, row in outside.iterrows():
+                    pce = str(row.get("PitchCall", "")).strip()
+                    color = DOT_COLORS.get(pce, "#cccccc")
+                    ax.scatter(
+                        row["PlateLocSide"],
+                        row["PlateLocHeight"],
+                        s=70,
+                        color=color,
+                        alpha=0.85,
+                        edgecolors="white",
+                        linewidth=0.5,
+                        zorder=4,
+                    )
+
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT, ZONE_BOTTOM),
+                ZONE_RIGHT - ZONE_LEFT,
+                ZONE_TOP - ZONE_BOTTOM,
+                fill=False,
+                linewidth=2.5,
+                edgecolor="#222222",
+                zorder=5,
+            ))
+
+        else:
+            for row_i in range(3):
+                for col_i in range(3):
+                    x0 = col_edges[col_i]
+                    y0 = row_edges[row_i]
+                    ax.add_patch(Rectangle(
+                        (x0, y0), zw, zh,
+                        facecolor="white",
+                        edgecolor="#aaaaaa",
+                        linewidth=1.2,
+                        zorder=2,
+                    ))
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT, ZONE_BOTTOM),
+                ZONE_RIGHT - ZONE_LEFT,
+                ZONE_TOP - ZONE_BOTTOM,
+                fill=False,
+                linewidth=2.5,
+                edgecolor="#222222",
+                zorder=5,
+            ))
+
+        s_pct = f"{int(round(total_swings / total_pitches * 100))}%" if total_pitches > 0 else "—"
+        c_pct = f"{int(round(total_contact / total_swings * 100))}%" if total_swings > 0 else "—"
+
+        vs_str = f" | vs {pitcher_hand}" if pitcher_hand else ""
+        subtitle = f"Swing%: {s_pct}   |   Contact%: {c_pct}   |   n = {total_pitches}{vs_str}"
+
+        ax.text(
+            0.5, 1.03, subtitle,
+            transform=ax.transAxes,
+            ha="center", va="bottom",
+            fontsize=10, color="#555555",
+        )
+
+        legend_handles = [
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#F5A623", markersize=9, label="Take"),
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#E24B4A", markersize=9, label="Swing & Miss"),
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#7bafd4", markersize=9, label="Foul"),
+            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#1D9E75", markersize=9, label="In Play"),
+        ]
+        ax.legend(
+            handles=legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.18),
+            ncol=4,
+            frameon=True,
+            fontsize=9,
+            handletextpad=0.4,
+            columnspacing=1.2,
+        )
+
+        ax.set_xlim(ZONE_LEFT - 1.0, ZONE_RIGHT + 1.0)
+        ax.set_ylim(ZONE_BOTTOM - 0.6, ZONE_TOP + 0.8)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        fig.subplots_adjust(top=0.88, bottom=0.20, left=0.08, right=0.92)
+        return fig
+
+    # ── spray chart ─────────────────────────────────────────────────────────
+    @output
+    @render.plot
+    def batter_spray_plot():
+        data = batter_data()
+        bid  = input.player() if input.player_type() == "batter" else None
+        fig, ax = plt.subplots(figsize=(4.5, 4.5))
+        fig.patch.set_facecolor("#f7f7f7"); ax.set_facecolor("#f7f7f7")
+        angles = np.linspace(np.radians(45), np.radians(135), 100)
+        OF, IF = 200, 90
+        ox, oy = OF*np.cos(angles), OF*np.sin(angles)
+        ix, iy = IF*np.cos(angles), IF*np.sin(angles)
+        ax.fill(np.append(ox,[0]), np.append(oy,[0]), color="#e8f5e9", zorder=1)
+        ax.plot(np.append(ox,[0,ox[0]]), np.append(oy,[0,oy[0]]), color="#aaa", lw=1, zorder=2)
+        ax.fill(np.append(ix,[0]), np.append(iy,[0]), color="#c8e6c9", zorder=1)
+        ax.plot(np.append(ix,[0,ix[0]]), np.append(iy,[0,iy[0]]), color="#aaa", lw=0.8, zorder=2)
+        for ang in [45,135]:
+            r = np.radians(ang)
+            ax.plot([0,OF*np.cos(r)],[0,OF*np.sin(r)], color="#888", lw=1, ls="--", zorder=2)
+        ax.plot(0,0,"s",color="white",markersize=7,markeredgecolor="#555",zorder=5)
+        HIT = {"Single":"#1D9E75","Double":"#378ADD","Triple":"#7B2FBE","HomeRun":"#BA7517"}
+        if data is not None and not data.empty and bid:
+            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+            for c in ["ExitSpeed","Direction"]:
+                if c in d.columns: d[c] = pd.to_numeric(d[c], errors="coerce")
+            pr_s = d["PlayResult"].astype(str).str.strip() if "PlayResult" in d.columns else pd.Series("",index=d.index)
+            inp  = d[pr_s.isin(set(HIT)|{"Out","FieldersChoice","Error"})].dropna(subset=["Direction"])
+            for _, row in inp.iterrows():
+                ang  = np.radians(90 - float(row["Direction"]))
+                ev   = float(row["ExitSpeed"]) if pd.notna(row.get("ExitSpeed")) else 70
+                dist = max(min(ev*1.5, OF-5), IF-10)
+                pr   = str(row.get("PlayResult","")).strip()
+                ax.scatter(dist*np.cos(ang), dist*np.sin(ang),
+                           s=50 if pr in HIT else 35,
+                           color=HIT.get(pr,"#D85A30"), alpha=0.82,
+                           edgecolors="none", zorder=4)
+        ax.set_xlim(-220,220); ax.set_ylim(-20,230)
+        ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([]); ax.grid(False)
+        ax.legend(handles=[
+            plt.Line2D([0],[0],marker="o",color="w",markerfacecolor=c,markersize=7,label=l)
+            for l,c in [("Single","#1D9E75"),("Double","#378ADD"),
+                        ("Triple","#7B2FBE"),("HR","#BA7517"),("Out","#D85A30")]
+        ], loc="lower center", ncol=5, fontsize=7, framealpha=0.8)
+        fig.tight_layout(); return fig
+
+    # ── exit velo vs launch angle ────────────────────────────────────────────
+    @output
+    @render.plot
+    def batter_ev_la_plot():
+        data = batter_data()
+        bid = input.player() if input.player_type() == "batter" else None
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+        ax.set_box_aspect(1)
+
+        ax.add_patch(Rectangle(
+            (98, 26), 22, 4,
+            color="#e8f5e9",
+            zorder=1,
+            linewidth=1.2,
+            edgecolor="#2e7d32",
+            linestyle="--",
+        ))
+        ax.text(
+            109, 28, "Barrel zone",
+            ha="center", va="center",
+            fontsize=8, color="#2e7d32",
+            fontweight="bold", zorder=2,
+        )
+
+        HT = {
+            "GroundBall": "#D85A30",
+            "LineDrive": "#1D9E75",
+            "FlyBall": "#378ADD",
+            "Popup": "#888780",
+        }
+
+        plotted = False
+        if data is not None and not data.empty and bid:
+            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+            for c in ["ExitSpeed", "Angle"]:
+                if c in d.columns:
+                    d[c] = pd.to_numeric(d[c], errors="coerce")
+            d = d.dropna(subset=["ExitSpeed", "Angle"])
+            d = d[d["ExitSpeed"] > 0]
+
+            if not d.empty:
+                plotted = True
+                for _, row in d.iterrows():
+                    ht = str(row.get("TaggedHitType", "")).strip()
+                    ax.scatter(
+                        row["ExitSpeed"],
+                        row["Angle"],
+                        s=38,
+                        color=HT.get(ht, "#aaa"),
+                        alpha=0.82,
+                        edgecolors="white",
+                        linewidth=0.4,
+                        zorder=3,
+                    )
+
+        ax.axhline(0, color="#ccc", lw=0.8, ls="--")
+        ax.set_xlim(40, 120)
+        ax.set_ylim(-20, 70)
+        ax.set_xlabel("Exit velocity (mph)", fontsize=9)
+        ax.set_ylabel("Launch angle (°)", fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, alpha=0.2, linestyle="--")
+
+        if not plotted:
+            ax.text(
+                0.5, 0.5, "No exit velocity data",
+                ha="center", va="center",
+                transform=ax.transAxes,
+                fontsize=10, color="#888",
+            )
+
+        ax.legend(
+            handles=[
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=c, markersize=7, label=l)
+                for l, c in [("GB", "#D85A30"), ("LD", "#1D9E75"), ("FB", "#378ADD"), ("Popup", "#888780")]
+            ],
+            loc="upper left",
+            fontsize=7,
+            framealpha=0.85,
+            ncol=2,
+        )
+
+        fig.subplots_adjust(top=0.96, bottom=0.14, left=0.14, right=0.96)
+        return fig
+
+    # ── exit velo distribution (batting practice only) ───────────────────────
+    @output
+    @render.plot
+    def batter_ev_dist_plot():
+        data = batter_data()
+        bid = input.player() if input.player_type() == "batter" else None
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+        ax.set_box_aspect(1)
+
+        BUCKETS = [
+            (50, 60, "#B5D4F4"),
+            (60, 70, "#378ADD"),
+            (70, 80, "#185FA5"),
+            (80, 90, "#378ADD"),
+            (90, 200, "#BA7517"),
+        ]
+        LABELS = ["50–60", "60–70", "70–80", "80–90", "90+"]
+        counts = [0] * 5
+
+        if data is not None and not data.empty and bid:
+            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+            if "ExitSpeed" in d.columns:
+                ev = pd.to_numeric(d["ExitSpeed"], errors="coerce").dropna()
+                ev = ev[ev > 0]
+                for i, (lo, hi, _) in enumerate(BUCKETS):
+                    counts[i] = int(((ev >= lo) & (ev < hi)).sum())
+
+        xs = np.arange(5)
+        bars = ax.bar(xs, counts, color=[c for _, _, c in BUCKETS], width=0.62, zorder=2)
+
+        for bar, cnt in zip(bars, counts):
+            if cnt > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.3,
+                    str(cnt),
+                    ha="center", va="bottom",
+                    fontsize=9, fontweight="bold",
+                )
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels(LABELS, fontsize=9)
+        ax.set_ylabel("Hit count", fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, axis="y", alpha=0.2, linestyle="--")
+
+        ax.text(
+            0.98, 0.97,
+            "Amber = 90+ mph hard contact",
+            transform=ax.transAxes,
+            ha="right", va="top",
+            fontsize=7.5, color="#BA7517",
+        )
+
+        fig.subplots_adjust(top=0.96, bottom=0.14, left=0.14, right=0.96)
+        return fig
+
+    # ── plate discipline radar (scrimmage / live only) ───────────────────────
+    @output
+    @render.plot
+    def batter_radar_plot():
+        data = batter_data()
+        bid = input.player() if input.player_type() == "batter" else None
+
+        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+
+        LABELS = ["Zone\nSw%", "Contact%", "O-Contact%", "Chase%", "Whiff%", "Zone%"]
+        N = len(LABELS)
+        angles = [n / N * 2 * np.pi for n in range(N)] + [0]
+        values = [0.0] * N
+
+        if data is not None and not data.empty and bid:
+            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+            pc = d["PitchCall"].astype(str).str.strip() if "PitchCall" in d.columns else pd.Series("", index=d.index)
+
+            SW = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+            CT = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+            if "PlateLocSide" in d.columns and "PlateLocHeight" in d.columns:
+                d["PlateLocSide"] = pd.to_numeric(d["PlateLocSide"], errors="coerce")
+                d["PlateLocHeight"] = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+                d["iz"] = (
+                    d["PlateLocSide"].between(ZONE_LEFT, ZONE_RIGHT)
+                    & d["PlateLocHeight"].between(ZONE_BOTTOM, ZONE_TOP)
+                )
+            else:
+                d["iz"] = False
+
+            d["sw"] = pc.isin(SW)
+            d["ct"] = pc.isin(CT)
+            d["wh"] = pc.eq("StrikeSwinging")
+
+            n = len(d)
+            iz = d["iz"]
+            oz = ~iz
+            zp = int(iz.sum())
+            op = int(oz.sum())
+            ts = int(d["sw"].sum())
+            oz_sw = int((d["sw"] & oz).sum())
+
+            values = [
+                int((d["sw"] & iz).sum()) / zp if zp > 0 else 0,
+                int(d["ct"].sum()) / ts if ts > 0 else 0,
+                int((d["ct"] & oz).sum()) / oz_sw if oz_sw > 0 else 0,
+                oz_sw / op if op > 0 else 0,
+                int(d["wh"].sum()) / ts if ts > 0 else 0,
+                zp / n if n > 0 else 0,
+            ]
+
+        vals = values + [values[0]]
+
+        for r in [0.25, 0.50, 0.75, 1.0]:
+            ax.plot(angles, [r] * (N + 1), color="#ddd", lw=0.6, ls="--", zorder=1)
+
+        ax.plot(angles, vals, color="#185FA5", lw=2, zorder=3)
+        ax.fill(angles, vals, color="#378ADD", alpha=0.18, zorder=2)
+        ax.scatter(
+            angles[:-1], values,
+            s=42, color="#185FA5",
+            zorder=4, edgecolors="white", lw=0.8,
+        )
+
+        for ang, val in zip(angles[:-1], values):
+            ax.text(
+                ang,
+                min(val + 0.13, 1.10),
+                f"{val * 100:.0f}%",
+                ha="center", va="center",
+                fontsize=7.5, fontweight="bold",
+                color="#185FA5", zorder=5,
+            )
+
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(LABELS, fontsize=8)
+        ax.set_ylim(0, 1.0)
+        ax.set_yticks([0.25, 0.50, 0.75])
+        ax.set_yticklabels(["25%", "50%", "75%"], fontsize=7, color="#aaa")
+        ax.spines["polar"].set_visible(False)
+
+        fig.subplots_adjust(top=0.96, bottom=0.10, left=0.08, right=0.92)
+        return fig
 
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
