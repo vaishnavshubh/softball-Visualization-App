@@ -1,0 +1,5 @@
+shiny>=0.7.0
+pandas
+matplotlib
+numpy
+jinja2

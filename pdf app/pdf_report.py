@@ -12,9 +12,7 @@ from datetime import date
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle, Polygon
-from matplotlib.lines import Line2D
 from matplotlib.backends.backend_pdf import PdfPages
 import tempfile
 
@@ -31,7 +29,9 @@ STATIC_DIR = os.path.join(APP_DIR, "static")
 
 PURDUE_LOGO_SRC = "PU-H-Full-Rev-RGB.png"
 
-FIG_SIZE = (3.6, 2.8)
+# Compact figure size for side-by-side web charts (PDF uses its own layout)
+FIG_SIZE = (2.85, 2.15)
+WEB_PIE_FIGSIZE = (3.35, 2.75)
 
 COLUMNS_TO_KEEP = [
     "PitchNo", "Date", "Time", "PitchofPA",
@@ -385,61 +385,6 @@ def format_pct(x, digits=1):
     return f"{x * 100:.{digits}f}%"
 
 
-def filter_df_to_pitch_type(df: pd.DataFrame, pitch_type_value: str) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if pitch_type_value in (None, "", "all"):
-        return df
-    return df[df[PITCH_TYPE_COL].astype(str).str.strip() == str(pitch_type_value)].copy()
-
-
-def compute_comparison_metrics(df: pd.DataFrame) -> dict:
-    if df is None or df.empty:
-        return {
-            "pitch_count": 0,
-            "avg_velo": np.nan,
-            "max_velo": np.nan,
-            "velo_sd": np.nan,
-            "spin_rate": np.nan,
-            "ivb_avg": np.nan,
-            "hb_avg": np.nan,
-            "strike_pct": np.nan,
-            "swing_pct": np.nan,
-            "whiff_pct": np.nan,
-        }
-
-    pitch_count = len(df)
-    velo = pd.to_numeric(df["RelSpeed"], errors="coerce") if "RelSpeed" in df.columns else pd.Series(dtype=float)
-    spin = pd.to_numeric(df["SpinRate"], errors="coerce") if "SpinRate" in df.columns else pd.Series(dtype=float)
-    ivb = pd.to_numeric(df["InducedVertBreak"], errors="coerce") if "InducedVertBreak" in df.columns else pd.Series(dtype=float)
-    hb = pd.to_numeric(df["HorzBreak"], errors="coerce") if "HorzBreak" in df.columns else pd.Series(dtype=float)
-    pc = df["PitchCall"].astype(str).str.strip() if "PitchCall" in df.columns else pd.Series("", index=df.index)
-
-    is_strike = pc.isin({"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"})
-    is_swing = pc.isin({"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"})
-    is_whiff = pc.eq("StrikeSwinging")
-
-    return {
-        "pitch_count": pitch_count,
-        "avg_velo": velo.mean(),
-        "max_velo": velo.max(),
-        "velo_sd": velo.std(),
-        "spin_rate": spin.mean(),
-        "ivb_avg": ivb.mean(),
-        "hb_avg": hb.mean(),
-        "strike_pct": is_strike.mean() if pitch_count > 0 else np.nan,
-        "swing_pct": is_swing.mean() if pitch_count > 0 else np.nan,
-        "whiff_pct": (is_whiff.sum() / is_swing.sum()) if is_swing.sum() > 0 else np.nan,
-    }
-
-
-def _find_col(df, candidates):
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
-
-
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
@@ -519,42 +464,10 @@ app_ui = ui.page_fluid(
             box-sizing: border-box;
         }
 
-        .tabs-wrap .nav-tabs {
-            border-bottom: 1px solid #d6d6d6;
-            background: #ffffff;
-            padding: 8px 10px 0 10px;
-            border-radius: 10px 10px 0 0;
-        }
-
-        .tabs-wrap .nav-tabs .nav-link {
-            border: none;
-            color: #111111;
-            font-weight: 900;
-            padding: 10px 18px;
-            margin-right: 10px;
-            background: transparent;
-        }
-
-        .tabs-wrap .nav-tabs .nav-link.active {
-            color: #111111;
-            position: relative;
-        }
-
-        .tabs-wrap .nav-tabs .nav-link.active::after {
-            content: "";
-            position: absolute;
-            left: 12px;
-            right: 12px;
-            bottom: -1px;
-            height: 3px;
-            background: #DDB945;
-        }
-
         .panel {
             background: #ffffff;
             border: 1px solid #d6d6d6;
-            border-top: none;
-            border-radius: 0 0 10px 10px;
+            border-radius: 10px;
             padding: 16px 16px 18px 16px;
             min-height: calc(100vh - 140px);
         }
@@ -585,10 +498,6 @@ app_ui = ui.page_fluid(
             border: 1px solid #d6d6d6;
             border-radius: 10px;
             padding: 10px;
-        }
-
-        .card-fixed {
-            min-height: 420px;
         }
 
         .legend-row {
@@ -729,19 +638,18 @@ app_ui = ui.page_fluid(
                 selected="all",
             ),
             ui.input_select("player", "Player Name", choices={"": "—"}),
-            ui.download_button("download_pdf", "Download PDF Report"),
-            ui.tags.div(
-                ui.input_select("cmp_opponent_team", "", choices={}),
-                ui.input_select("cmp_opponent_pitcher", "", choices={}),
-                ui.input_select("cmp_pitch_type", "", choices={"all": "All Pitches"}, selected="all"),
-                ui.input_select("dev_view", "", choices={"strike_whiff": "Strike & Whiff Trends"}, selected="strike_whiff"),
-                style="display:none;",
+            ui.input_select(
+                "batter_handedness",
+                "Batter Handedness",
+                choices={"all": "Combined View", "Right": "Right Handed", "Left": "Left Handed"},
+                selected="all",
             ),
+            ui.download_button("download_pdf", "Download PDF Report"),
             class_="sidebar",
         ),
 
         ui.tags.div(
-            ui.output_ui("main_tabs"),
+            ui.output_ui("home_content"),
             class_="main-area",
         ),
 
@@ -834,7 +742,11 @@ def server(input, output, session):
         pid = input.player()
         if df is None or df.empty or not pid:
             return None
-        return df[df["PitcherId"].astype(str) == str(pid)]
+        d = df[df["PitcherId"].astype(str) == str(pid)].copy()
+        b_side = input.batter_handedness()
+        if b_side != "all" and "BatterSide" in d.columns:
+            d = d[d["BatterSide"].astype(str).str.strip() == b_side]
+        return d
 
     @reactive.calc
     def pitch_colors():
@@ -872,123 +784,16 @@ def server(input, output, session):
 
         n_pitches = len(data)
 
+        b_hand = input.batter_handedness()
+        vs_str = ""
+        if b_hand == "Right":
+            vs_str = " (vs RHB)"
+        elif b_hand == "Left":
+            vs_str = " (vs LHB)"
+
         if hand:
-            return f"{name} | {hand} {n_pitches} pitches"
-        return f"{name} {n_pitches} pitches"
-
-    # ---- Comparison tab reactives ----
-    @reactive.effect
-    def _update_cmp_opponent_teams():
-        df = current_df()
-        if df is None or df.empty or "PitcherTeam" not in df.columns:
-            ui.update_select("cmp_opponent_team", choices={}, session=session)
-            return
-
-        teams = sorted([t for t in df["PitcherTeam"].dropna().astype(str).str.strip().unique().tolist() if t])
-        choices = {t: t for t in teams}
-        ui.update_select(
-            "cmp_opponent_team",
-            choices=choices,
-            selected=list(choices.keys())[0] if choices else None,
-            session=session,
-        )
-
-    @reactive.effect
-    def _update_cmp_opponent_pitchers():
-        df = current_df()
-        opp_team = input.cmp_opponent_team()
-        if (
-            df is None
-            or df.empty
-            or not opp_team
-            or "PitcherId" not in df.columns
-            or "Pitcher" not in df.columns
-        ):
-            ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
-            return
-
-        d = df[df["PitcherTeam"].astype(str).str.strip() == str(opp_team)].copy()
-        lookup = d[["PitcherId", "Pitcher"]].dropna().drop_duplicates().sort_values(["Pitcher", "PitcherId"])
-        choices = {
-            str(r.PitcherId): (format_display_name(r.Pitcher) or str(r.PitcherId))
-            for r in lookup.itertuples(index=False)
-        }
-        pid1 = input.player()
-        choices = {k: v for k, v in choices.items() if k != str(pid1)}
-        ui.update_select(
-            "cmp_opponent_pitcher",
-            choices=choices,
-            selected=list(choices.keys())[0] if choices else None,
-            session=session,
-        )
-
-    @reactive.calc
-    def cmp_primary_df():
-        d = pitcher_data()
-        return d if d is not None else pd.DataFrame()
-
-    @reactive.calc
-    def cmp_opponent_df():
-        df = current_df()
-        opp_team = input.cmp_opponent_team()
-        opp_pid = input.cmp_opponent_pitcher()
-        if df is None or df.empty or not opp_team or not opp_pid:
-            return pd.DataFrame()
-        return df[
-            (df["PitcherTeam"].astype(str).str.strip() == str(opp_team))
-            & (df["PitcherId"].astype(str) == str(opp_pid))
-        ].copy()
-
-    @reactive.effect
-    def _update_cmp_pitch_type_choices():
-        a = cmp_primary_df()
-        b = cmp_opponent_df()
-        if a.empty or b.empty:
-            ui.update_select("cmp_pitch_type", choices={"all": "All Pitches"}, selected="all", session=session)
-            return
-        a_types = set(a[PITCH_TYPE_COL].dropna().astype(str).str.strip().tolist())
-        b_types = set(b[PITCH_TYPE_COL].dropna().astype(str).str.strip().tolist())
-        shared = sorted([pt for pt in (a_types & b_types) if pt])
-        choices = {"all": "All Pitches", **{pt: pt for pt in shared}}
-        selected = input.cmp_pitch_type()
-        if selected not in choices:
-            selected = "all"
-        ui.update_select("cmp_pitch_type", choices=choices, selected=selected, session=session)
-
-    @reactive.calc
-    def cmp_primary_filtered():
-        return filter_df_to_pitch_type(cmp_primary_df(), input.cmp_pitch_type())
-
-    @reactive.calc
-    def cmp_opponent_filtered():
-        return filter_df_to_pitch_type(cmp_opponent_df(), input.cmp_pitch_type())
-
-    # ---- 5. UI tabs ----
-    @output
-    @render.ui
-    def main_tabs():
-        df = current_df()
-        if df is None or df.empty:
-            return ui.div(
-                "Upload a CSV (with the standard schema) and select a player.",
-                class_="panel",
-            )
-
-        return ui.div(
-            ui.navset_tab(
-                ui.nav_panel(
-                    "Home",
-                    ui.div(
-                        ui.div("Pitch Profile", class_="profile-title"),
-                        ui.div(ui.output_text("player_summary"), class_="player-summary"),
-                        ui.output_ui("movement_legend"),
-                        ui.output_ui("home_content"),
-                        class_="panel",
-                    ),
-                ),
-            ),
-            class_="tabs-wrap",
-        )
+            return f"{name} | {hand} {n_pitches} pitches{vs_str}"
+        return f"{name} {n_pitches} pitches{vs_str}"
 
     @output
     @render.text
@@ -998,31 +803,45 @@ def server(input, output, session):
     @output
     @render.ui
     def home_content():
+        df = current_df()
+        if df is None or df.empty:
+            return ui.div(
+                "Upload a CSV (with the standard schema) and select a player.",
+                class_="panel",
+            )
+
         data = pitcher_data()
         if data is None or data.empty:
-            return ui.div("No pitcher data for the selected player.")
+            return ui.div(
+                ui.div("Pitch Profile", class_="profile-title"),
+                ui.div("No pitcher data for the selected filters.", class_="player-summary"),
+                class_="panel",
+            )
 
         return ui.div(
+            ui.div("Pitch Profile", class_="profile-title"),
+            ui.div(ui.output_text("player_summary"), class_="player-summary"),
+            ui.output_ui("movement_legend"),
             ui.row(
                 ui.column(
                     4,
                     ui.card(
                         ui.card_header("Pitch Usage"),
-                        ui.output_plot("pie", height="340px"),
+                        ui.output_plot("pie", height="260px"),
                     ),
                 ),
                 ui.column(
                     4,
                     ui.card(
                         ui.card_header("Pitch Locations"),
-                        ui.output_plot("location", height="340px"),
+                        ui.output_plot("location", height="260px"),
                     ),
                 ),
                 ui.column(
                     4,
                     ui.card(
                         ui.card_header("Pitch Movements"),
-                        ui.output_plot("movement", height="340px"),
+                        ui.output_plot("movement", height="260px"),
                     ),
                 ),
             ),
@@ -1038,168 +857,17 @@ def server(input, output, session):
                     ),
                 ),
             ),
+            class_="panel",
         )
 
-    @output
-    @render.ui
-    def cmp_summary_cards():
-        pur = cmp_primary_filtered()
-        opp = cmp_opponent_filtered()
-        if pur.empty or opp.empty:
-            return ui.div("No comparison data available for the selected filters.")
-
-        pm = compute_comparison_metrics(pur)
-        om = compute_comparison_metrics(opp)
-        pur_name = format_display_name(pur["Pitcher"].iloc[0]) if "Pitcher" in pur.columns else "Selected Pitcher"
-        opp_name = format_display_name(opp["Pitcher"].iloc[0]) if "Pitcher" in opp.columns else "Opponent Pitcher"
-        pitch_label = "All Pitches" if input.cmp_pitch_type() in (None, "", "all") else str(input.cmp_pitch_type())
-
-        def _card(name, m, accent):
-            return ui.card(
-                ui.card_header(name),
-                ui.div(
-                    ui.span(pitch_label),
-                    ui.span(f"Pitch Count: {m['pitch_count']}", style="margin-left:16px;"),
-                    style=f"font-weight:700; margin-bottom:10px; border-left:4px solid {accent}; padding-left:8px;",
-                ),
-                ui.div(f"Avg Velo: {format_num(m['avg_velo'])}"),
-                ui.div(f"Max Velo: {format_num(m['max_velo'])}"),
-                ui.div(f"Strike %: {format_pct(m['strike_pct'])}"),
-                ui.div(f"Whiff %: {format_pct(m['whiff_pct'])}"),
-            )
-
-        return ui.layout_columns(
-            _card(pur_name, pm, "#DDB945"),
-            _card(opp_name, om, "#9E9E9E"),
-        )
-
-    @output
-    @render.table
-    def cmp_table():
-        pur = cmp_primary_filtered()
-        opp = cmp_opponent_filtered()
-        if pur.empty or opp.empty:
-            return pd.DataFrame(columns=["Metric", "Selected", "Opponent"])
-
-        pm = compute_comparison_metrics(pur)
-        om = compute_comparison_metrics(opp)
-        return pd.DataFrame(
-            {
-                "Metric": ["Velocity STDEV", "IVB Avg (in)", "HB Avg (in)"],
-                "Selected": [format_num(pm["velo_sd"]), format_num(pm["ivb_avg"]), format_num(pm["hb_avg"])],
-                "Opponent": [format_num(om["velo_sd"]), format_num(om["ivb_avg"]), format_num(om["hb_avg"])],
-            }
-        )
-
-    @output
-    @render.plot
-    def cmp_movement():
-        pur = cmp_primary_filtered()
-        opp = cmp_opponent_filtered()
-        fig, ax = plt.subplots(figsize=(10.5, 4.2))
-        fig.patch.set_facecolor("#ffffff")
-        ax.set_facecolor("#ffffff")
-        if pur.empty and opp.empty:
-            ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-            return fig
-
-        if not pur.empty:
-            p = pur[pur[X_MOV].notna() & pur[Y_MOV].notna()]
-            ax.scatter(p[X_MOV], p[Y_MOV], s=18, alpha=0.75, color="#DDB945", label="Selected")
-        if not opp.empty:
-            o = opp[opp[X_MOV].notna() & opp[Y_MOV].notna()]
-            ax.scatter(o[X_MOV], o[Y_MOV], s=18, alpha=0.55, color="#9E9E9E", label="Opponent")
-        ax.axhline(0, linewidth=1, color="#777777")
-        ax.axvline(0, linewidth=1, color="#777777")
-        ax.set_xlim(-20, 20)
-        ax.set_ylim(-20, 20)
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("Horizontal Break (in)")
-        ax.set_ylabel("Induced Vertical Break (in)")
-        ax.grid(True, alpha=0.2)
-        ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
-        return fig
-
-    @output
-    @render.plot
-    def cmp_location():
-        pur = cmp_primary_filtered()
-        opp = cmp_opponent_filtered()
-        fig, axes = plt.subplots(1, 2, figsize=(9.5, 4.4))
-        fig.patch.set_facecolor("#f7f7f7")
-        for ax, d, title, color in zip(axes, [pur, opp], ["Selected", "Opponent"], ["#DDB945", "#9E9E9E"]):
-            ax.set_facecolor("#f7f7f7")
-            if d.empty:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-                ax.set_axis_off()
-                continue
-            loc = d[d["PlateLocSide"].notna() & d["PlateLocHeight"].notna()].copy()
-            ax.add_patch(Rectangle((ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3), (ZONE_RIGHT - ZONE_LEFT) + 0.6, (ZONE_TOP - ZONE_BOTTOM) + 0.6, alpha=0.25, facecolor="#d9d9d9", edgecolor="none"))
-            ax.add_patch(Rectangle((ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM, fill=False, linewidth=2.0, edgecolor="black"))
-            ax.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1.2, color="#1f77b4")
-            ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1.2, color="#ff7f0e")
-            ax.scatter(loc["PlateLocSide"], loc["PlateLocHeight"], s=35, alpha=0.8, color=color, edgecolors="none")
-            ax.add_patch(home_plate_polygon(y_front=0.10))
-            ax.set_xlim(-3, 3)
-            ax.set_ylim(-0.5, 5)
-            ax.set_aspect("equal", adjustable="box")
-            ax.set_title(title, fontsize=12, fontweight="bold")
-            ax.grid(True, alpha=0.2)
-            ax.set_xticks([])
-            ax.set_yticks([])
-        return fig
-
-    @output
-    @render.plot
-    def cmp_count_location():
-        pur = cmp_primary_filtered()
-        opp = cmp_opponent_filtered()
-        COUNTS = [(0, 0, "0-0"), (3, 0, "3-0"), (0, 2, "0-2"), (1, 2, "1-2"), (2, 2, "2-2"), (3, 2, "3-2")]
-        STRIKE_EVENTS = {"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-        fig, axes = plt.subplots(len(COUNTS), 2, figsize=(10, 3.1 * len(COUNTS)))
-        if len(COUNTS) == 1:
-            axes = np.array([axes])
-
-        def _count_df(d, balls, strikes):
-            if d is None or d.empty:
-                return pd.DataFrame()
-            b_col = _find_col(d, ["Balls", "balls"])
-            s_col = _find_col(d, ["Strikes", "strikes"])
-            if b_col is None or s_col is None:
-                return pd.DataFrame()
-            m = pd.to_numeric(d[b_col], errors="coerce").eq(balls) & pd.to_numeric(d[s_col], errors="coerce").eq(strikes)
-            return d.loc[m].copy()
-
-        def _draw(ax, d, title):
-            ax.set_facecolor("white")
-            ax.set_xlim(-1.5, 1.5)
-            ax.set_ylim(-0.55, 4.55)
-            ax.add_patch(Rectangle((-1.1, 1.2), 2.2, 2.6, alpha=0.20, facecolor="#bfdbfe", edgecolor="none"))
-            ax.add_patch(Rectangle((ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM, fill=False, linewidth=2.0, edgecolor="#1e293b"))
-            if d is not None and not d.empty:
-                loc = d[d["PlateLocSide"].notna() & d["PlateLocHeight"].notna()].copy()
-                colors = ["#22c55e" if str(pc) in STRIKE_EVENTS else "#475569" for pc in loc["PitchCall"].astype(str)]
-                ax.scatter(loc["PlateLocSide"], loc["PlateLocHeight"], s=55, alpha=0.9, color=colors, edgecolors="white", linewidths=0.35)
-            ax.add_patch(home_plate_polygon(y_front=0.10))
-            ax.set_title(title, fontsize=9, fontweight="bold")
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        for idx, (b, s, lbl) in enumerate(COUNTS):
-            _draw(axes[idx, 0], _count_df(pur, b, s), f"Selected {lbl}")
-            _draw(axes[idx, 1], _count_df(opp, b, s), f"Opponent {lbl}")
-        fig.tight_layout(h_pad=1.2, w_pad=1.1)
-        return fig
-
-    # ---- 6. Plots & table (same logic as app.py) ----
+    # ---- 6. Plots & table ----
     @output
     @render.plot
     def pie():
         usage = usage_df()
         colors = pitch_colors()
 
-        fig, ax = plt.subplots(figsize=(5.0, 4.0))
+        fig, ax = plt.subplots(figsize=WEB_PIE_FIGSIZE)
         fig.patch.set_facecolor("#f7f7f7")
         ax.set_facecolor("#f7f7f7")
 
@@ -1219,12 +887,12 @@ def server(input, output, session):
             startangle=90,
             autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
             pctdistance=0.65,
-            textprops={"fontsize": 10, "fontweight": "bold"},
+            textprops={"fontsize": 8, "fontweight": "bold"},
         )
         for t in ax.texts:
-            t.set_fontsize(8)
+            t.set_fontsize(7)
 
-        ax.set_title("Pitch Usage", fontsize=16, fontweight="bold")
+        ax.set_title("Pitch Usage", fontsize=12, fontweight="bold")
         return fig
 
     @output
@@ -1274,7 +942,7 @@ def server(input, output, session):
             ax.scatter(
                 g["PlateLocSide"],
                 g["PlateLocHeight"],
-                s=35,
+                s=22,
                 alpha=0.8,
                 color=colors.get(pt, (0.5, 0.5, 0.5)),
             )
@@ -1283,9 +951,10 @@ def server(input, output, session):
         ax.set_xlim(-3, 3)
         ax.set_ylim(-0.5, 5)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("PlateLocSide")
-        ax.set_ylabel("PlateLocHeight")
-        ax.set_title("Pitch Locations", fontsize=16, fontweight="bold")
+        ax.set_xlabel("PlateLocSide", fontsize=8)
+        ax.set_ylabel("PlateLocHeight", fontsize=8)
+        ax.tick_params(axis="both", labelsize=7)
+        ax.set_title("Pitch Locations", fontsize=12, fontweight="bold")
         ax.grid(True, alpha=0.2)
         return fig
 
@@ -1313,7 +982,7 @@ def server(input, output, session):
         for pt, g in mov.groupby(PITCH_TYPE_COL):
             ax.scatter(
                 g[X_MOV], g[Y_MOV],
-                s=25, alpha=0.75,
+                s=16, alpha=0.75,
                 color=colors.get(pt, (0.5, 0.5, 0.5))
             )
 
@@ -1321,9 +990,10 @@ def server(input, output, session):
         ax.axvline(0, linewidth=1, color="#777777")
         ax.set_xlim(*MOV_XLIM)
         ax.set_ylim(*MOV_YLIM)
-        ax.set_xlabel("Horizontal break (in)")
-        ax.set_ylabel("Induced vertical break (in)")
-        ax.set_title("Pitch Movements", fontsize=16, fontweight="bold")
+        ax.set_xlabel("Horizontal break (in)", fontsize=8)
+        ax.set_ylabel("Induced vertical break (in)", fontsize=8)
+        ax.tick_params(axis="both", labelsize=7)
+        ax.set_title("Pitch Movements", fontsize=12, fontweight="bold")
         ax.grid(True, alpha=0.25)
 
         # Stats box
@@ -1341,16 +1011,14 @@ def server(input, output, session):
         ax.text(
             0.98, 0.98, box_text,
             transform=ax.transAxes,
-            fontsize=7,
+            fontsize=5.5,
             verticalalignment="top",
             horizontalalignment="right",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="#cccccc", alpha=0.85),
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#cccccc", alpha=0.85),
             family="monospace",
         )
 
         return fig
-
-    import math
 
     @output
     @render.ui
@@ -1389,133 +1057,6 @@ def server(input, output, session):
             *items,
             class_="legend-row",
         )
-
-    @output
-    @render.plot
-    def dev_strike_whiff_trend():
-        data = pitcher_data()
-        if data is None or data.empty:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "No data for selected filters.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
-        if "Date" not in data.columns or PITCH_TYPE_COL not in data.columns or "PitchCall" not in data.columns:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "Missing Date / Pitch Type / PitchCall columns.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
-        df = data.copy()
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", infer_datetime_format=True)
-        df = df[df["Date"].notna()]
-        df["Date"] = df["Date"].dt.normalize()
-        df = df.dropna(subset=["Date", PITCH_TYPE_COL])
-
-        pc = df["PitchCall"].astype(str).str.strip()
-
-        STRIKE_EVENTS = {
-            "StrikeCalled", "StrikeSwinging",
-            "FoulBallFieldable", "FoulBallNotFieldable",
-            "InPlay"
-        }
-        SWING_EVENTS = {
-            "StrikeSwinging",
-            "FoulBallFieldable", "FoulBallNotFieldable",
-            "InPlay"
-        }
-
-        df["is_strike"] = pc.isin(STRIKE_EVENTS)
-        df["is_swing"] = pc.isin(SWING_EVENTS)
-        df["is_whiff"] = pc.eq("StrikeSwinging")
-
-        g = (
-            df.groupby([pd.Grouper(key="Date", freq="D"), PITCH_TYPE_COL])
-              .agg(
-                  pitch_n=("is_strike", "size"),
-                  strike_pct=("is_strike", "mean"),
-                  swings=("is_swing", "sum"),
-                  whiffs=("is_whiff", "sum"),
-              )
-              .reset_index()
-              .sort_values([PITCH_TYPE_COL, "Date"])
-        )
-
-        g["whiff_pct"] = np.where(g["swings"] > 0, g["whiffs"] / g["swings"], np.nan)
-        g = g[g["pitch_n"] >= 8].copy()
-        g = g[g[PITCH_TYPE_COL].astype(str).str.lower() != "other"].copy()
-
-        if g.empty:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "Not enough pitch samples to plot trends.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
-        pitch_types = list(g[PITCH_TYPE_COL].dropna().unique())
-        colors = pitch_colors()
-
-        n = len(pitch_types)
-        ncols = 2 if n > 1 else 1
-        nrows = math.ceil(n / ncols)
-
-        fig_w = 14
-        fig_h = 5 * nrows
-        fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h))
-
-        if isinstance(axes, np.ndarray):
-            axes_list = axes.flatten().tolist()
-        else:
-            axes_list = [axes]
-
-        fig.patch.set_facecolor("#ffffff")
-        fig.subplots_adjust(top=0.82, hspace=0.5, wspace=0.3)
-
-        for i, pt in enumerate(pitch_types):
-            ax = axes_list[i]
-            sub = g[g[PITCH_TYPE_COL] == pt]
-
-            c = colors.get(pt, "#1F3A5F")
-            n_total = int(sub["pitch_n"].sum())
-
-            ax.plot(
-                sub["Date"], sub["strike_pct"] * 100,
-                linewidth=2.5, marker="o", markersize=7,
-                color="#DDB945", label="Strike %", zorder=3
-            )
-            ax.plot(
-                sub["Date"], sub["whiff_pct"] * 100,
-                linewidth=2.5, linestyle="--", marker="s", markersize=6,
-                color="#AAAAAA", label="Whiff %", zorder=3
-            )
-
-            ax.set_xlim(sub["Date"].min(), sub["Date"].max())
-            ax.set_title(f"{pt}  (n={n_total})", fontsize=12, fontweight="bold")
-            ax.grid(True, alpha=0.2, linestyle="--")
-            ax.set_ylim(0, 100)
-            ax.tick_params(axis="x", rotation=25)
-
-            if ncols == 1 or (i % ncols == 0):
-                ax.set_ylabel("Percent", fontsize=10)
-
-        for j in range(n, len(axes_list)):
-            axes_list[j].set_facecolor("#f5f5f5")
-            axes_list[j].set_axis_off()
-
-        locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
-        formatter = mdates.DateFormatter("%m-%d")
-        for ax in axes_list[:n]:
-            ax.xaxis.set_major_locator(locator)
-            ax.xaxis.set_major_formatter(formatter)
-
-        legend_handles = [
-            Line2D([0], [0], color="#DDB945", linewidth=2.5, marker="o", markersize=7, label="Strike %"),
-            Line2D([0], [0], color="#AAAAAA", linewidth=2.5, linestyle="--", marker="s", markersize=6, label="Whiff %"),
-        ]
-        fig.legend(handles=legend_handles, loc="upper center", ncol=2,
-                   frameon=True, fancybox=True, edgecolor="#cccccc",
-                   bbox_to_anchor=(0.5, 1.015), fontsize=11)
-
-        return fig
 
     @output
     @render.table
@@ -1670,7 +1211,6 @@ def server(input, output, session):
 
         with PdfPages(tmp_path) as pdf:
             if data is None or data.empty or not selected_id:
-                # Simple page indicating no data
                 fig, ax = plt.subplots(figsize=(14, 9.5))
                 ax.text(
                     0.5, 0.5,
@@ -1682,14 +1222,18 @@ def server(input, output, session):
                 pdf.savefig(fig)
                 plt.close(fig)
             else:
-                # Landscape layout: three visualizations on top, table across the bottom
                 fig = plt.figure(figsize=(16, 10))
                 fig.patch.set_facecolor("#ffffff")
                 gs = fig.add_gridspec(2, 3, height_ratios=[2.0, 1.35])
 
-                # Get player name for title
                 player_name = format_display_name(data[entity_name_col].iloc[0]) if entity_name_col in data.columns else "Unknown"
-                fig.suptitle(f"{entity_label} Report: {player_name}", fontsize=18, fontweight="bold", y=0.98)
+                b_side = input.batter_handedness()
+                vs_suffix = ""
+                if b_side == "Right":
+                    vs_suffix = " vs Right-Handed Batters"
+                elif b_side == "Left":
+                    vs_suffix = " vs Left-Handed Batters"
+                fig.suptitle(f"{entity_label} Report: {player_name}{vs_suffix}", fontsize=18, fontweight="bold", y=0.98)
 
                 ax_pie = fig.add_subplot(gs[0, 0])
                 ax_loc = fig.add_subplot(gs[0, 1])
@@ -1797,6 +1341,24 @@ def server(input, output, session):
                     ax_mov.set_ylabel("Induced vertical break (in)", fontsize=9)
                     ax_mov.set_title("Pitch Movements", fontsize=14, fontweight="bold")
                     ax_mov.grid(True, alpha=0.25)
+                    mov_lines = []
+                    for pt, g in mov.groupby(PITCH_TYPE_COL):
+                        avg_hb = g[X_MOV].mean()
+                        avg_ivb = g[Y_MOV].mean()
+                        mov_lines.append((pt, avg_hb, avg_ivb))
+                    mov_box_text = "\n".join(
+                        f"{pt}: Avg HB {avg_hb:+.1f}, Avg IVB {avg_ivb:+.1f}"
+                        for pt, avg_hb, avg_ivb in mov_lines
+                    )
+                    ax_mov.text(
+                        0.98, 0.98, mov_box_text,
+                        transform=ax_mov.transAxes,
+                        fontsize=6.5,
+                        verticalalignment="top",
+                        horizontalalignment="right",
+                        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#cccccc", alpha=0.9),
+                        family="monospace",
+                    )
                     ax_mov.legend(fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1.0), framealpha=0.9)
 
                 # 4) Summary Table on ax_table
@@ -1957,138 +1519,6 @@ def server(input, output, session):
 
                 pdf.savefig(fig)
                 plt.close(fig)
-
-                # Page 2: Development trends (build directly; do not call render wrappers)
-                fig_dev, ax_dev = plt.subplots(figsize=(14, 8))
-                fig_dev.patch.set_facecolor("#ffffff")
-                dev_df = data.copy()
-                if {"Date", PITCH_TYPE_COL, "PitchCall"}.issubset(dev_df.columns):
-                    dev_df["Date"] = pd.to_datetime(dev_df["Date"], errors="coerce")
-                    dev_df = dev_df.dropna(subset=["Date", PITCH_TYPE_COL]).copy()
-                    dev_df["Date"] = dev_df["Date"].dt.normalize()
-                    pc_dev = dev_df["PitchCall"].astype(str).str.strip()
-                    dev_df["is_strike"] = pc_dev.isin({"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"})
-                    dev_df["is_swing"] = pc_dev.isin({"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"})
-                    dev_df["is_whiff"] = pc_dev.eq("StrikeSwinging")
-                    g_dev = (
-                        dev_df.groupby([pd.Grouper(key="Date", freq="D"), PITCH_TYPE_COL])
-                        .agg(pitch_n=("is_strike", "size"), strike_pct=("is_strike", "mean"), swings=("is_swing", "sum"), whiffs=("is_whiff", "sum"))
-                        .reset_index()
-                    )
-                    g_dev["whiff_pct"] = np.where(g_dev["swings"] > 0, g_dev["whiffs"] / g_dev["swings"], np.nan)
-                    g_dev = g_dev[g_dev["pitch_n"] >= 8]
-                    if g_dev.empty:
-                        ax_dev.text(0.5, 0.5, "Not enough pitch samples for trends.", ha="center", va="center", transform=ax_dev.transAxes)
-                        ax_dev.set_axis_off()
-                    else:
-                        for pt, s in g_dev.groupby(PITCH_TYPE_COL):
-                            s = s.sort_values("Date")
-                            ax_dev.plot(s["Date"], s["strike_pct"] * 100, marker="o", linewidth=2, label=f"{pt} Strike %")
-                            ax_dev.plot(s["Date"], s["whiff_pct"] * 100, marker="s", linestyle="--", linewidth=1.8, label=f"{pt} Whiff %")
-                        ax_dev.set_ylim(0, 100)
-                        ax_dev.set_title("Development: Strike & Whiff Trends", fontsize=15, fontweight="bold")
-                        ax_dev.set_ylabel("Percent")
-                        ax_dev.grid(True, alpha=0.25)
-                        ax_dev.legend(fontsize=8, ncol=2, frameon=False, loc="upper left")
-                else:
-                    ax_dev.text(0.5, 0.5, "Missing Date / Pitch Type / PitchCall columns.", ha="center", va="center", transform=ax_dev.transAxes)
-                    ax_dev.set_axis_off()
-                fig_dev.tight_layout()
-                pdf.savefig(fig_dev)
-                plt.close(fig_dev)
-
-                # Page 3: Comparison movement + location
-                fig_cmp, (ax_cm, ax_cl) = plt.subplots(1, 2, figsize=(16, 9))
-                fig_cmp.patch.set_facecolor("#ffffff")
-                opp_team = input.cmp_opponent_team()
-                opp_pid = input.cmp_opponent_pitcher()
-                cmp_pitch = input.cmp_pitch_type()
-                primary = data.copy()
-                opp = current_df()
-                if opp is not None and not opp.empty and opp_team and opp_pid:
-                    opp = opp[
-                        (opp["PitcherTeam"].astype(str).str.strip() == str(opp_team))
-                        & (opp["PitcherId"].astype(str) == str(opp_pid))
-                    ].copy()
-                    if cmp_pitch not in (None, "", "all"):
-                        primary = primary[primary[PITCH_TYPE_COL].astype(str).str.strip() == str(cmp_pitch)]
-                        opp = opp[opp[PITCH_TYPE_COL].astype(str).str.strip() == str(cmp_pitch)]
-                else:
-                    opp = pd.DataFrame()
-
-                pm = primary[primary[X_MOV].notna() & primary[Y_MOV].notna()]
-                om = opp[opp[X_MOV].notna() & opp[Y_MOV].notna()] if not opp.empty else pd.DataFrame()
-                if pm.empty and om.empty:
-                    ax_cm.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax_cm.transAxes)
-                    ax_cm.set_axis_off()
-                else:
-                    if not pm.empty:
-                        ax_cm.scatter(pm[X_MOV], pm[Y_MOV], s=18, alpha=0.75, color="#DDB945", label="Selected")
-                    if not om.empty:
-                        ax_cm.scatter(om[X_MOV], om[Y_MOV], s=18, alpha=0.55, color="#9E9E9E", label="Opponent")
-                    ax_cm.axhline(0, linewidth=1, color="#777777")
-                    ax_cm.axvline(0, linewidth=1, color="#777777")
-                    ax_cm.set_xlim(-20, 20)
-                    ax_cm.set_ylim(-20, 20)
-                    ax_cm.set_aspect("equal", adjustable="box")
-                    ax_cm.set_title("Comparison Movement", fontsize=13, fontweight="bold")
-                    ax_cm.grid(True, alpha=0.2)
-                    ax_cm.legend(frameon=False, loc="upper left")
-
-                pl = primary[primary["PlateLocSide"].notna() & primary["PlateLocHeight"].notna()]
-                ol = opp[opp["PlateLocSide"].notna() & opp["PlateLocHeight"].notna()] if not opp.empty else pd.DataFrame()
-                if pl.empty and ol.empty:
-                    ax_cl.text(0.5, 0.5, "No comparison location data", ha="center", va="center", transform=ax_cl.transAxes)
-                    ax_cl.set_axis_off()
-                else:
-                    ax_cl.add_patch(Rectangle((ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3), (ZONE_RIGHT - ZONE_LEFT) + 0.6, (ZONE_TOP - ZONE_BOTTOM) + 0.6, alpha=0.25, facecolor="#d9d9d9", edgecolor="none"))
-                    ax_cl.add_patch(Rectangle((ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM, fill=False, linewidth=2))
-                    ax_cl.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1, color="#1f77b4")
-                    ax_cl.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1, color="#ff7f0e")
-                    if not pl.empty:
-                        ax_cl.scatter(pl["PlateLocSide"], pl["PlateLocHeight"], s=28, alpha=0.75, color="#DDB945", label="Selected")
-                    if not ol.empty:
-                        ax_cl.scatter(ol["PlateLocSide"], ol["PlateLocHeight"], s=28, alpha=0.55, color="#9E9E9E", label="Opponent")
-                    ax_cl.add_patch(home_plate_polygon(y_front=0.10))
-                    ax_cl.set_xlim(-3, 3)
-                    ax_cl.set_ylim(-0.5, 5)
-                    ax_cl.set_aspect("equal", adjustable="box")
-                    ax_cl.set_title("Comparison Location", fontsize=13, fontweight="bold")
-                    ax_cl.grid(True, alpha=0.2)
-                    ax_cl.legend(frameon=False, loc="upper right")
-                fig_cmp.tight_layout()
-                pdf.savefig(fig_cmp)
-                plt.close(fig_cmp)
-
-                # Page 4: Location by count
-                fig_count, axes_count = plt.subplots(3, 2, figsize=(14, 10))
-                counts = [(0, 0), (3, 0), (0, 2), (1, 2), (2, 2), (3, 2)]
-                b_col_p = _find_col(primary, ["Balls", "balls"])
-                s_col_p = _find_col(primary, ["Strikes", "strikes"])
-                b_col_o = _find_col(opp, ["Balls", "balls"]) if not opp.empty else None
-                s_col_o = _find_col(opp, ["Strikes", "strikes"]) if not opp.empty else None
-                for ax, (b, s) in zip(axes_count.flatten(), counts):
-                    ax.set_facecolor("white")
-                    ax.add_patch(Rectangle((ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM, fill=False, linewidth=1.6))
-                    ax.set_xlim(-1.5, 1.5)
-                    ax.set_ylim(-0.55, 4.55)
-                    if b_col_p and s_col_p:
-                        psub = primary[pd.to_numeric(primary[b_col_p], errors="coerce").eq(b) & pd.to_numeric(primary[s_col_p], errors="coerce").eq(s)]
-                        psub = psub[psub["PlateLocSide"].notna() & psub["PlateLocHeight"].notna()]
-                        if not psub.empty:
-                            ax.scatter(psub["PlateLocSide"], psub["PlateLocHeight"], s=20, alpha=0.7, color="#DDB945")
-                    if b_col_o and s_col_o:
-                        osub = opp[pd.to_numeric(opp[b_col_o], errors="coerce").eq(b) & pd.to_numeric(opp[s_col_o], errors="coerce").eq(s)]
-                        osub = osub[osub["PlateLocSide"].notna() & osub["PlateLocHeight"].notna()]
-                        if not osub.empty:
-                            ax.scatter(osub["PlateLocSide"], osub["PlateLocHeight"], s=20, alpha=0.45, color="#9E9E9E")
-                    ax.set_title(f"Count {b}-{s}", fontsize=10, fontweight="bold")
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-                fig_count.suptitle("Comparison: Location by Count", fontsize=15, fontweight="bold", y=0.98)
-                fig_count.tight_layout(rect=[0, 0, 1, 0.96])
-                pdf.savefig(fig_count)
-                plt.close(fig_count)
 
         # Read the PDF as binary bytes and yield them, then clean up
         with open(tmp_path, "rb") as f:
