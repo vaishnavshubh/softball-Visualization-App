@@ -11,11 +11,14 @@ Layout (matches sketch):
       2x2 grid: Usage pie, Location, Summary table, Movement
 """
 
+import sys
 import glob
 import json
 import math
 import os
 from datetime import date
+from pathlib import Path
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -28,6 +31,15 @@ import numpy as np
 import pandas as pd
 from shiny import App, render, ui, reactive
 
+# Debug code: verify CSV ingestion
+v3_dir = (Path(__file__).parent / "data" / "v3").resolve()
+print(f"[DEBUG] Resolved 'data/v3' path: {v3_dir}", file=sys.stderr)
+
+csv_files = list(v3_dir.rglob("*.csv"))
+print(f"[DEBUG] Number of CSV files found: {len(csv_files)}", file=sys.stderr)
+
+for idx, f in enumerate(csv_files[:5]):
+    print(f"[DEBUG] CSV file {idx+1}: {f}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -2041,6 +2053,92 @@ def server(input, output, session):
         if data is None or not pid or input.player_type() != "pitcher":
             return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
         return compute_usage(data, pid)
+    @reactive.calc
+    def usage_df():
+        data = pitcher_data()
+        pid = input.player() if input.player_type() == "pitcher" else None
+        if data is None or not pid or input.player_type() != "pitcher":
+            return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
+        return compute_usage(data, pid)
+
+    @reactive.calc
+    def prediction_df():
+        data = pitcher_data()
+        if data is None or data.empty:
+            return pd.DataFrame()
+
+        d = data.copy()
+        if "PitchCall" not in d.columns or PITCH_TYPE_COL not in d.columns:
+            return pd.DataFrame()
+
+        pc = d["PitchCall"].astype(str).str.strip()
+
+        swing_events = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        strike_events = {"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        contact_events = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+        d["is_swing"] = pc.isin(swing_events)
+        d["is_whiff"] = pc.eq("StrikeSwinging")
+        d["is_strike"] = pc.isin(strike_events)
+        d["is_contact"] = pc.isin(contact_events)
+
+        out = (
+            d.groupby(PITCH_TYPE_COL)
+             .agg(
+                 pitch_count=("PitchNo", "count"),
+                 strike_pct=("is_strike", "mean"),
+                 swing_pct=("is_swing", "mean"),
+                 whiff_pct=("is_whiff", "mean"),
+                 contact_pct=("is_contact", "mean"),
+             )
+             .reset_index()
+        )
+
+        return out.sort_values(["whiff_pct", "strike_pct"], ascending=False)
+
+    @output
+    @render.ui
+    def prediction_content():
+        if input.player_type() != "pitcher":
+            return ui.div("Prediction is currently available for pitcher view only.")
+
+        pred = prediction_df()
+        if pred is None or pred.empty:
+            return ui.div("No prediction data available for the selected filters.")
+
+        top = pred.iloc[0]
+
+        return ui.div(
+            ui.div(
+                f"Recommended pitch: {top[PITCH_TYPE_COL]}",
+                style="font-size:22px; font-weight:900; margin-bottom:10px;"
+            ),
+            ui.div(
+                f"Expected strike rate: {top['strike_pct']*100:.1f}%",
+                style="margin-bottom:6px;"
+            ),
+            ui.div(
+                f"Expected whiff rate: {top['whiff_pct']*100:.1f}%",
+                style="margin-bottom:6px;"
+            ),
+            ui.div(
+                f"Expected contact rate: {top['contact_pct']*100:.1f}%",
+                style="margin-bottom:6px;"
+            ),
+            ui.div(
+                f"Sample size: {int(top['pitch_count'])} pitches",
+                style="color:#666;"
+            ),
+            style=(
+                "padding:18px; background:#f7f7f7; border:1px solid #d6d6d6; "
+                "border-radius:10px;"
+            )
+        )
+
+    @reactive.calc
+    def player_summary_text():
+        if input.player_type() != "pitcher":
+            return "Select Pitcher to view profile"
 
     @reactive.calc
     def player_summary_text():
@@ -3119,6 +3217,16 @@ def server(input, output, session):
                         class_="panel",
                     ),
                 ),
+
+                ui.nav_panel(
+                    "Prediction",
+                    ui.div(
+                        ui.div("Prediction", class_="profile-title"),
+                        ui.output_ui("prediction_content"),
+                        class_="panel",
+                    ),
+                ),
+
 
                 ui.nav_panel(
                     "Development",
