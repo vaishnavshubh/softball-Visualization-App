@@ -490,17 +490,11 @@ def infer_session_type_for_purdue(df, filename=""):
 def apply_session_filter_for_team(df, team, session_value):
     if df is None or df.empty:
         return df
-
-    out = df.copy()
-
     if session_value == "all":
-        return out
-
+        return df
     if not is_purdue_team(team) and session_value in {"bullpen", "batting_practice", "scrimmage"}:
-        return out
-
-    out = out[out["SessionType"] == session_value]
-    return out
+        return df
+    return df[df["SessionType"] == session_value]
 
 
 # ---------------------------------------------------------------------------
@@ -672,15 +666,24 @@ def contains_non_purdue(series):
 def build_pitch_color_map(pitch_types):
     out = {}
     unknown = sorted([p for p in pitch_types if pd.notna(p) and p not in PITCH_TYPE_FIXED_COLORS])
+    unknown_idx = {pt: i for i, pt in enumerate(unknown)}   # ← build O(1) lookup once
     for pt in pitch_types:
         if pd.isna(pt):
             continue
         if pt in PITCH_TYPE_FIXED_COLORS:
             out[pt] = PITCH_TYPE_FIXED_COLORS[pt]
         else:
-            idx = unknown.index(pt) if pt in unknown else 0
+            idx = unknown_idx.get(pt, 0)
             out[pt] = PITCH_TYPE_FALLBACK_COLORS[idx % len(PITCH_TYPE_FALLBACK_COLORS)]
     return out
+
+def pitch_alpha(pt: str, selected: str) -> float:
+    if not selected:
+        return 0.7
+    if pt == selected:
+        return 1.0
+    return 0.15
+
 
 def home_plate_polygon(y_front=0.0):
     half_width = (17 / 12) / 2
@@ -1032,6 +1035,31 @@ def get_pitcher_team_logo_text(team_code: str) -> str:
 # Load csv metadata once
 # ---------------------------------------------------------------------------
 csv_paths_with_dates, global_date_min, global_date_max = get_csv_paths_with_dates()
+
+def build_master_df():
+    dfs = []
+
+    for rel, full, dmin, dmax in csv_paths_with_dates:
+        df = load_and_clean_csv(full)
+        if df is None or df.empty or "Date" not in df.columns:
+            continue
+
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df[df["Date"].notna()].copy()
+        if df.empty:
+            continue
+
+        df["DateOnly"] = df["Date"].dt.date
+        df = infer_session_type_for_purdue(df, filename=rel)
+
+        dfs.append(df)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    return pd.concat(dfs, ignore_index=True)
+
+MASTER_DF = build_master_df()
 
 DEFAULT_SEASON = "spring_2026"
 
@@ -1699,6 +1727,16 @@ app_ui = ui.page_fluid(
                 selected="pitcher",
             ),
             ui.input_select("player", "Player Name", choices={"": "—"}),
+            ui.input_select(
+                "batter_side",
+                "Batter Side",
+                choices={
+                    "all": "Combined View",
+                    "right": "vs Right Handed",
+                    "left": "vs Left Handed",
+                },
+                selected="all",
+            ),
 
             class_="sidebar",
         ),
@@ -1717,7 +1755,7 @@ app_ui = ui.page_fluid(
 # Server
 # ---------------------------------------------------------------------------
 def server(input, output, session):
-
+    selected_pitch = reactive.Value("")
     updating_dates_from_season = reactive.Value(False)
 
     @reactive.calc
@@ -1861,35 +1899,18 @@ def server(input, output, session):
     def current_df():
         start = input.date_start()
         end = input.date_end()
-        if start is None or end is None or not csv_paths_with_dates:
+
+        if start is None or end is None:
             return None
         if start > end:
             return None
-
-        dfs = []
-        for rel, full, dmin, dmax in csv_paths_with_dates:
-            if dmax < start or dmin > end:
-                continue
-
-            df = load_and_clean_csv(full)
-            if df is None or "Date" not in df.columns:
-                continue
-
-            df["_date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
-            df = df[df["_date"].notna() & (df["_date"] >= start) & (df["_date"] <= end)]
-            df = df.drop(columns=["_date"], errors="ignore")
-
-            if df.empty:
-                continue
-
-            df = infer_session_type_for_purdue(df, filename=rel)
-            dfs.append(df)
-
-        if not dfs:
+        if MASTER_DF.empty:
             return None
 
-        combined = pd.concat(dfs, ignore_index=True)
-        return combined
+        return MASTER_DF[
+            (MASTER_DF["DateOnly"] >= start) &
+            (MASTER_DF["DateOnly"] <= end)
+        ]
 
     @reactive.effect
     def _warn_unsupported_source():
@@ -1983,6 +2004,25 @@ def server(input, output, session):
                 selected=list(choices.keys())[0] if choices else None,
                 session=session,
             )
+            
+    @reactive.effect
+    @reactive.event(input.reset_pitch)
+    def _clear_clicked_pitch():
+        selected_pitch.set("")
+
+    @reactive.effect
+    @reactive.event(input.clicked_pitch)
+    def _sync_legend_click():
+        val = input.clicked_pitch()
+        if not val:
+            return
+
+        if val == selected_pitch.get():
+            selected_pitch.set("")
+        else:
+            selected_pitch.set(str(val))
+
+
 
     @reactive.calc
     def batter_data():
@@ -2018,6 +2058,7 @@ def server(input, output, session):
         df = current_df()
         team = input.team()
         pid = input.player() if input.player_type() == "pitcher" else None
+
         if df is None or not team or not pid:
             return None
 
@@ -2025,7 +2066,20 @@ def server(input, output, session):
             df = df[df["PitcherTeam"].astype(str).str.strip() == str(team)]
 
         df = apply_session_filter_for_team(df, team, input.session_type())
-        return df[df["PitcherId"].astype(str) == str(pid)]
+        df = df[df["PitcherId"].astype(str) == str(pid)]
+
+        # Batter handedness filter
+        batter_side = input.batter_side()
+
+        if batter_side != "all" and "BatterSide" in df.columns:
+            side_series = df["BatterSide"].astype(str).str.strip().str.lower()
+
+            if batter_side == "right":
+                df = df[side_series.isin(["right", "r"])]
+            elif batter_side == "left":
+                df = df[side_series.isin(["left", "l"])]
+
+        return df
 
     @reactive.calc
     def pitch_colors():
@@ -2033,6 +2087,45 @@ def server(input, output, session):
         if data is None or PITCH_TYPE_COL not in data.columns:
             return {}
         return build_pitch_color_map(data[PITCH_TYPE_COL].dropna().unique())
+
+    @reactive.calc
+    def pitch_order():
+        data = pitcher_data()
+        if data is None or data.empty or PITCH_TYPE_COL not in data.columns:
+            return []
+        return (
+            data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL]), PITCH_TYPE_COL]
+            .astype(str).value_counts().index.tolist()
+        )
+
+    @reactive.calc
+    def pitcher_loc_data():
+        data = pitcher_data()
+        if data is None or data.empty:
+            return pd.DataFrame()
+        d = data.copy()
+        d["PlateLocSide"]   = pd.to_numeric(d["PlateLocSide"],   errors="coerce")
+        d["PlateLocHeight"] = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+        return d[
+            d["PlateLocSide"].notna()
+            & d["PlateLocHeight"].notna()
+            & is_valid_pitch_type(d[PITCH_TYPE_COL])
+        ]
+
+
+    @reactive.calc
+    def pitcher_mov_data():
+        data = pitcher_data()
+        if data is None or data.empty:
+            return pd.DataFrame()
+        d = data.copy()
+        d[X_MOV] = pd.to_numeric(d[X_MOV], errors="coerce")
+        d[Y_MOV] = pd.to_numeric(d[Y_MOV], errors="coerce")
+        return d[
+            d[X_MOV].notna()
+            & d[Y_MOV].notna()
+            & is_valid_pitch_type(d[PITCH_TYPE_COL])
+        ]
 
     @reactive.calc
     def usage_df():
@@ -2053,14 +2146,27 @@ def server(input, output, session):
 
         name_raw = data["Pitcher"].iloc[0] if "Pitcher" in data.columns else ""
         throws_raw = data["PitcherThrows"].iloc[0] if "PitcherThrows" in data.columns else ""
+
         name = format_display_name(name_raw) or "Pitcher"
         hand = throws_to_short(throws_raw)
-
         n_pitches = len(data)
 
+        side_label = {
+            "all": "Combined View",
+            "right": "vs RHB",
+            "left": "vs LHB",
+        }.get(input.batter_side(), "Combined View")
+
         if hand:
-            return f"{name} | {hand} {n_pitches} pitches"
-        return f"{name} {n_pitches} pitches"
+            return f"{name} | {hand} | {side_label} | {n_pitches} pitches"
+        return f"{name} | {side_label} | {n_pitches} pitches"
+
+    
+    @reactive.calc
+    def cached_pitch_metrics():
+        data = pitcher_data()
+        pid = input.player() if input.player_type() == "pitcher" else None
+        return compute_pitch_metrics(data, pid)
 
     @reactive.calc
     def session_player_type_warning():
@@ -2108,7 +2214,7 @@ def server(input, output, session):
             ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
             return
 
-        d = df[df["PitcherTeam"].astype(str).str.strip() == str(opp_team)].copy()
+        d = df[df["PitcherTeam"].astype(str).str.strip() == str(opp_team)]
 
         if d.empty or "PitcherId" not in d.columns or "Pitcher" not in d.columns:
             ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
@@ -2398,14 +2504,16 @@ def server(input, output, session):
         if pur is None or pur.empty or opp is None or opp.empty:
             ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
+            plt.close(fig)
             return fig
 
-        pur_mov = pur[pur[X_MOV].notna() & pur[Y_MOV].notna()].copy()
-        opp_mov = opp[opp[X_MOV].notna() & opp[Y_MOV].notna()].copy()
+        pur_mov = pur[pur[X_MOV].notna() & pur[Y_MOV].notna()]
+        opp_mov = opp[opp[X_MOV].notna() & opp[Y_MOV].notna()]
 
         if pur_mov.empty and opp_mov.empty:
             ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
+            plt.close(fig)
             return fig
 
         if not pur_mov.empty:
@@ -2431,6 +2539,8 @@ def server(input, output, session):
         ax.grid(True, alpha=0.2)
         ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.02,1), borderaxespad=0)
         ax.set_title(cmp_pitch_type_label(), fontsize=13, fontweight="bold", loc ="center")
+        
+        plt.close(fig)
         return fig
 
     @output
@@ -2457,7 +2567,7 @@ def server(input, output, session):
             loc = d[
                 d["PlateLocSide"].notna() &
                 d["PlateLocHeight"].notna()
-            ].copy()
+            ]
 
             if loc.empty:
                 ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
@@ -2533,6 +2643,7 @@ def server(input, output, session):
             ax.set_xticks([])
             ax.set_yticks([])
 
+        plt.close(fig)
         return fig
 
     @output
@@ -2575,7 +2686,7 @@ def server(input, output, session):
                 pd.to_numeric(d[b_col], errors="coerce").eq(balls) &
                 pd.to_numeric(d[s_col], errors="coerce").eq(strikes)
             )
-            return d.loc[mask].copy()
+            return d.loc[mask]
 
         def _spct(df):
             if df is None or df.empty or "PitchCall" not in df.columns:
@@ -2607,7 +2718,7 @@ def server(input, output, session):
                     linestyle="--", linewidth=1.0, color="#f97316", alpha=0.6, zorder=1)
 
             if df is not None and not df.empty:
-                loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()].copy()
+                loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()]
                 if not loc.empty:
                     dot_colors = [
                         OUTCOME_COLORS.get(str(pc).strip(), DEFAULT_COLOR)
@@ -2785,6 +2896,7 @@ def server(input, output, session):
                 zorder=0, clip_on=False,
             ))
 
+        plt.close(fig)
         return fig
 
     
@@ -3120,21 +3232,6 @@ def server(input, output, session):
                     ),
                 ),
 
-                ui.nav_panel(
-                    "Development",
-                    ui.div(
-                        ui.div("Development", class_="profile-title"),
-                        ui.input_select(
-                            "dev_view",
-                            "",
-                            choices={"strike_whiff": "Strike & Whiff Trends"},
-                            selected="strike_whiff",
-                        ),
-                        ui.br(),
-                        ui.output_plot("dev_strike_whiff_trend", height="800px"),
-                        class_="panel",
-                    ),
-                ),
             ),
             class_="tabs-wrap",
         )
@@ -3264,49 +3361,48 @@ def server(input, output, session):
         if usage.empty:
             ax.text(0.5, 0.5, "No pitch usage data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
+            plt.close(fig)
             return fig
 
         labels = usage[PITCH_TYPE_COL].tolist()
         pcts = usage["usage_pct"].values
-        c = [colors.get(pt, (0.5, 0.5, 0.5)) for pt in labels]
+        sel = selected_pitch.get()
+        wedge_colors = [colors.get(pt, "#888888") for pt in labels]
 
-        ax.pie(
+        wedges, texts, autotexts = ax.pie(
             pcts,
             labels=None,
-            colors=c,
+            colors=wedge_colors,
             startangle=90,
+            counterclock=False,
             autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
             pctdistance=0.65,
             textprops={"fontsize": 10, "fontweight": "bold"},
         )
+        
+        for wedge, pt in zip(wedges, labels):
+            wedge.set_alpha(pitch_alpha(pt, sel))
+
         for t in ax.texts:
             t.set_fontsize(8)
+
+        plt.close(fig)    
         return fig
 
     @output
     @render.plot
     def location():
-        data = pitcher_data()
+        loc = pitcher_loc_data()
         colors = pitch_colors()
 
         fig, ax = plt.subplots(figsize=FIG_SIZE)
         fig.patch.set_facecolor("#f7f7f7")
         ax.set_facecolor("#f7f7f7")
 
-        if data is None or data.empty:
+        if loc is None or loc.empty:
             ax.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
-            return fig
-
-        loc = data[
-            data["PlateLocSide"].notna()
-            & data["PlateLocHeight"].notna()
-            & is_valid_pitch_type(data[PITCH_TYPE_COL])
-        ].copy()
-        
-        if loc.empty:
-            ax.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
+            plt.close(fig)
             return fig
 
         ax.add_patch(Rectangle(
@@ -3322,16 +3418,37 @@ def server(input, output, session):
             fill=False,
             linewidth=2
         ))
+
         ax.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
         ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
 
+        sel = selected_pitch.get()
+
         for pt, g in loc.groupby(PITCH_TYPE_COL):
+            x = g["PlateLocSide"]
+            y = g["PlateLocHeight"]
+            color = colors.get(pt, (0.5, 0.5, 0.5))
+
+            if sel and pt == sel:
+                ax.scatter(
+                    x,
+                    y,
+                    s=130,
+                    alpha=0.18,
+                    color=color,
+                    linewidths=0,
+                    zorder=1,
+                )
+
             ax.scatter(
-                g["PlateLocSide"],
-                g["PlateLocHeight"],
-                s=35,
-                alpha=0.8,
-                color=colors.get(pt, (0.5, 0.5, 0.5)),
+                x,
+                y,
+                s=70 if sel and pt == sel else 35,
+                alpha=1.0 if (not sel or pt == sel) else 0.18,
+                color=color,
+                edgecolors="black",
+                linewidths=0.5,
+                zorder=3 if sel and pt == sel else 2,
             )
 
         ax.add_patch(home_plate_polygon(y_front=0.10))
@@ -3341,37 +3458,56 @@ def server(input, output, session):
         ax.set_xlabel("PlateLocSide")
         ax.set_ylabel("PlateLocHeight")
         ax.grid(True, alpha=0.2)
+
+        plt.close(fig)
         return fig
 
     @output
     @render.plot
     def movement():
-        data = pitcher_data()
+        mov = pitcher_mov_data()
         colors = pitch_colors()
 
         fig, ax = plt.subplots(figsize=FIG_SIZE)
         fig.patch.set_facecolor("#f7f7f7")
         ax.set_facecolor("#f7f7f7")
 
-        if data is None or data.empty:
+        if mov is None or mov.empty:
             ax.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
-            return fig
-
-        mov = data[data[X_MOV].notna()& data[Y_MOV].notna()& is_valid_pitch_type(data[PITCH_TYPE_COL])].copy()
-        if mov.empty:
-            ax.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
+            plt.close(fig)
             return fig
 
         handles = []
         legend_labels = []
 
+        sel = selected_pitch.get()
+
         for pt, g in mov.groupby(PITCH_TYPE_COL):
+            x = g[X_MOV]
+            y = g[Y_MOV]
+            color = colors.get(pt, (0.5, 0.5, 0.5))
+
+            if sel and pt == sel:
+                ax.scatter(
+                    x,
+                    y,
+                    s=110,
+                    alpha=0.16,
+                    color=color,
+                    linewidths=0,
+                    zorder=1,
+                )
+
             sc = ax.scatter(
-                g[X_MOV], g[Y_MOV],
-                s=25, alpha=0.75,
-                color=colors.get(pt, (0.5, 0.5, 0.5))
+                x,
+                y,
+                s=55 if sel and pt == sel else 25,
+                alpha=1.0 if (not sel or pt == sel) else 0.18,
+                color=color,
+                edgecolors="black",
+                linewidths=0.45,
+                zorder=3 if sel and pt == sel else 2,
             )
             handles.append(sc)
             legend_labels.append(pt)
@@ -3383,13 +3519,12 @@ def server(input, output, session):
         ax.set_xlabel("Horizontal break (in)")
         ax.set_ylabel("Induced vertical break (in)")
         ax.grid(True, alpha=0.25)
-        
-        # Build-in stats box text
+
         lines = []
         for pt, g in mov.groupby(PITCH_TYPE_COL):
-            avg_hb  = g[X_MOV].mean()
+            avg_hb = g[X_MOV].mean()
             avg_ivb = g[Y_MOV].mean()
-            color   = colors.get(pt, "#555555")
+            color = colors.get(pt, "#555555")
             lines.append((pt, avg_hb, avg_ivb, color))
 
         box_text = "\n".join(
@@ -3406,23 +3541,17 @@ def server(input, output, session):
             family="monospace",
         )
 
+        plt.close(fig)
         return fig
 
     @output
     @render.ui
     def movement_legend():
-        df = pitcher_data()
-        if df is None or df.empty or PITCH_TYPE_COL not in df.columns:
+        order = pitch_order()
+        if not order:
             return ui.div()
-
-        order = (
-            df.loc[is_valid_pitch_type(df[PITCH_TYPE_COL]), PITCH_TYPE_COL]
-            .astype(str)
-            .value_counts()
-            .index.tolist()
-        )
-
         cols = pitch_colors()
+        sel = selected_pitch.get()
 
         items = []
         for pt in order:
@@ -3430,173 +3559,34 @@ def server(input, output, session):
                 continue
 
             color = cols.get(pt, "#777777")
+            is_active = (sel == "" or sel == pt)
+
             items.append(
-                ui.div(
-                    ui.span(
-                        style=f"display:inline-block; width:10px; height:10px; border-radius:50%; background:{color};"
-                    ),
+                ui.tags.span(
+                    ui.span(style=f"display:inline-block;width:10px;height:10px;border-radius:50%;background:{color};"),
                     ui.span(pt),
-                    style="display:flex; align-items:center; gap:6px;",
+                    style=(
+                        f"display:inline-flex;align-items:center;gap:6px;cursor:pointer;"
+                        f"opacity:{'1.0' if is_active else '0.25'};"
+                        f"font-weight:{'900' if sel == pt else '400'};"
+                        f"padding:3px 8px;border-radius:6px;"
+                        f"{'border:1.5px solid #DDB945;background:#fffbef;' if sel == pt else 'border:1.5px solid transparent;'}"
+                    ),
+                    onclick=f"Shiny.setInputValue('clicked_pitch', '{pt}', {{priority: 'event'}})",
                 )
             )
 
-        return ui.div(
-            *items,
-            class_="legend-row"
+        reset_btn = ui.tags.button(
+            "Reset",
+            type="button",
+            onclick="Shiny.setInputValue('reset_pitch', Date.now(), {priority: 'event'})",
+            style=(
+                "margin-left:12px;padding:4px 10px;border:1px solid #cfcfcf;"
+                "border-radius:6px;background:#ffffff;font-weight:700;cursor:pointer;"
+            ),
         )
+        return ui.div(*items, reset_btn, class_="legend-row")
 
-    @output
-    @render.plot
-    def dev_strike_whiff_trend():
-        if input.player_type() != "pitcher":
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "Pitcher view only.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
-        data = pitcher_data()
-        if data is None or data.empty:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "No data for selected filters.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
-        if "Date" not in data.columns or PITCH_TYPE_COL not in data.columns or "PitchCall" not in data.columns:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "Missing Date / Pitch Type / PitchCall columns.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-
-        df = data.copy()
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df["Date"] = df["Date"].dt.normalize()
-        df = df.dropna(subset=["Date", PITCH_TYPE_COL])
-        df = df[is_valid_pitch_type(df[PITCH_TYPE_COL])].copy()
-
-        pc = df["PitchCall"].astype(str).str.strip()
-
-        STRIKE_EVENTS = {
-            "StrikeCalled", "StrikeSwinging",
-            "FoulBallFieldable", "FoulBallNotFieldable",
-            "InPlay"
-        }
-        SWING_EVENTS = {
-            "StrikeSwinging",
-            "FoulBallFieldable", "FoulBallNotFieldable",
-            "InPlay"
-        }
-
-        df["is_strike"] = pc.isin(STRIKE_EVENTS)
-        df["is_swing"] = pc.isin(SWING_EVENTS)
-        df["is_whiff"] = pc.eq("StrikeSwinging")
-
-        # Aggregate DAILY by pitch type
-        g = (
-            df.groupby([pd.Grouper(key="Date", freq="D"), PITCH_TYPE_COL])
-              .agg(
-                  pitch_n=("is_strike", "size"),
-                  strike_pct=("is_strike", "mean"),
-                  swings=("is_swing", "sum"),
-                  whiffs=("is_whiff", "sum"),
-              )
-              .reset_index()
-              .sort_values([PITCH_TYPE_COL, "Date"])
-        )
-
-        g["whiff_pct"] = np.where(g["swings"] > 0, g["whiffs"] / g["swings"], np.nan)
-
-        # Optional: remove tiny-sample days (prevents weird spikes)
-        g = g[g["pitch_n"] >= 8].copy()
-
-        # Optional: hide "Other" because it ruins readability
-        g = g[g[PITCH_TYPE_COL].astype(str).str.lower() != "other"].copy()
-
-        if g.empty:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.text(0.5, 0.5, "Not enough pitch samples to plot trends.", ha="center", va="center")
-            ax.set_axis_off()
-            return fig
-        xmin = g["Date"].min()
-        xmax = g["Date"].max()
-
-        # Optional smoothing (recommended). If you truly want raw, set window = 1.
-        window = 1
-        g["strike_plot"] = g.groupby(PITCH_TYPE_COL)["strike_pct"].transform(
-            lambda s: s.rolling(window, min_periods=1).mean()
-        )
-        g["whiff_plot"] = g.groupby(PITCH_TYPE_COL)["whiff_pct"].transform(
-            lambda s: s.rolling(window, min_periods=1).mean()
-        )
-
-        pitch_types = list(g[PITCH_TYPE_COL].dropna().unique())
-        colors = pitch_colors()
-
-        # ---- Full-pane layout: 2-column grid ----
-        n = len(pitch_types)
-        ncols = 2 if n > 1 else 1
-        nrows = math.ceil(n / ncols)
-
-        # Big figure to use the whole main pane
-        fig_w = 14
-        fig_h = 5 * nrows   # grows with number of rows
-        fig, axes = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h))
-        fig.subplots_adjust(top=0.90, hspace=0.5, wspace=0.3)
-        
-
-        # Normalize axes to a flat list
-        if nrows == 1 and ncols == 1:
-            axes_list = [axes]
-        elif nrows == 1:
-            axes_list = list(axes)
-        else:
-            axes_list = [ax for row in axes for ax in (row if isinstance(row, (list, np.ndarray)) else [row])]
-
-        fig.patch.set_facecolor("#ffffff")
-
-        for i, pt in enumerate(pitch_types):
-            ax = axes_list[i]
-            sub = g[g[PITCH_TYPE_COL] == pt]
-
-            c = colors.get(pt, "#1F3A5F")
-            n_total = int(sub["pitch_n"].sum())
-
-            ax.plot(
-                sub["Date"], sub["strike_plot"] * 100,
-                linewidth=2.5, marker="o", markersize=7,
-                color="#DDB945", label="Strike %", zorder=3
-            )
-            ax.plot(
-                sub["Date"], sub["whiff_plot"] * 100,
-                linewidth=2.5, linestyle="--", marker="s", markersize=6,
-                color="#AAAAAA", label="Whiff %", zorder=3
-            )
-
-            ax.set_xlim(sub["Date"].min(), sub["Date"].max())
-            ax.set_title(f"{pt}  (n={n_total})", fontsize=12, fontweight="bold")
-            ax.grid(True, alpha=0.2, linestyle="--")
-            ax.set_ylim(0, 100)
-            ax.tick_params(axis="x", rotation=25)   # ← moved here, applies to ALL panels
-
-            if ncols == 1 or (i % ncols == 0):
-                ax.set_ylabel("Percent", fontsize=10)
-
-        # Style unused panels
-        for j in range(n, len(axes_list)):
-            axes_list[j].set_facecolor("#f5f5f5")
-            axes_list[j].set_axis_off()
-
-        for ax in axes_list[:n]:
-            ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=6))
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
-
-        legend_handles = [
-            Line2D([0], [0], color="#DDB945", linewidth=2.5, marker="o", markersize=7, label="Strike %"),
-            Line2D([0], [0], color="#AAAAAA", linewidth=2.5, linestyle="--", marker="s", markersize=6, label="Whiff %"),
-        ]
-        fig.legend(handles=legend_handles, loc="upper center", ncol=2,
-           frameon=True, fancybox=True, edgecolor="#cccccc", fontsize=11)
-
-        return fig
 
     @output
     @render.table
@@ -3604,6 +3594,7 @@ def server(input, output, session):
         data = pitcher_data()
         pid = input.player() if input.player_type() == "pitcher" else None
         session_type = input.session_type()
+        sel = selected_pitch.get()
 
         bullpen_cols = [
             "Pitch type", "Count", "Usage %",
@@ -3620,16 +3611,14 @@ def server(input, output, session):
             "Chase Contact %"
         ]
 
-        if data is None or data.empty or not pid:
-            return pd.DataFrame(
-                columns=bullpen_cols if session_type == "bullpen" else live_scrimmage_cols
-            )
+        cols = bullpen_cols if session_type == "bullpen" else live_scrimmage_cols
 
-        summary = compute_pitch_metrics(data, pid)
+        if data is None or data.empty or not pid:
+            return pd.DataFrame(columns=cols)
+
+        summary = cached_pitch_metrics()
         if summary is None or summary.empty:
-            return pd.DataFrame(
-                columns=bullpen_cols if session_type == "bullpen" else live_scrimmage_cols
-            )
+            return pd.DataFrame(columns=cols)
 
         out = summary.copy()
 
@@ -3664,13 +3653,49 @@ def server(input, output, session):
             "chase_contact_pct": "Chase Contact %",
         })
 
-        if session_type == "bullpen":
-            return out[bullpen_cols]
+        out = out[cols]
 
-        if session_type in {"live", "scrimmage"}:
-            return out[live_scrimmage_cols]
+        def highlight_col(col):
+            is_sel_row = (
+                out["Pitch type"].astype(str).str.strip() == str(sel).strip()
+                if sel else pd.Series(False, index=out.index)
+            )
 
-        return out[live_scrimmage_cols]
+            # Selected row style (bigger + bold)
+            selected_style_main = (
+                "font-size:18px;"
+                "font-weight:900;"
+                "color:#000000;"
+                "border-left:5px solid #DDB945;"
+            )
+
+            selected_style_other = (
+                "font-size:16px;"
+                "font-weight:800;"
+                "color:#111111;"
+                "background-color:#fff8dc;"
+            )
+
+            # Normal row style
+            normal_style_main = "font-size:12.5px;color:#444444;"
+            normal_style_other = "font-size:12px;color:#555555;"
+
+            if col.name == "Pitch type":
+                return [selected_style_main if v else normal_style_main for v in is_sel_row]
+
+            return [selected_style_other if v else normal_style_other for v in is_sel_row]
+
+        return (
+            out.style
+            .hide(axis="index")
+            .format({
+                "Max Velo": "{:.1f}",
+                "Avg Velo": "{:.1f}",
+                "Spin Rate": "{:.0f}",
+            })
+            .apply(highlight_col, axis=0)
+        )
+
 
     # ── dynamic home tab header ──────────────────────────────────────────────
     @output
@@ -3881,18 +3906,14 @@ def server(input, output, session):
 
             outside = d[~d["is_in_zone"]].copy()
             if not outside.empty:
-                for _, row in outside.iterrows():
-                    pce = str(row.get("PitchCall", "")).strip()
-                    color = DOT_COLORS.get(pce, "#cccccc")
+                outside["_color"] = outside["PitchCall"].astype(str).str.strip().map(
+                    lambda pce: DOT_COLORS.get(pce, "#cccccc")
+                )
+                for color, grp in outside.groupby("_color", sort=False):
                     ax.scatter(
-                        row["PlateLocSide"],
-                        row["PlateLocHeight"],
-                        s=70,
-                        color=color,
-                        alpha=0.85,
-                        edgecolors="white",
-                        linewidth=0.5,
-                        zorder=4,
+                        grp["PlateLocSide"], grp["PlateLocHeight"],
+                        s=70, color=color, alpha=0.85,
+                        edgecolors="white", linewidth=0.5, zorder=4,
                     )
 
             ax.add_patch(Rectangle(
@@ -3966,6 +3987,8 @@ def server(input, output, session):
             spine.set_visible(False)
 
         fig.subplots_adjust(top=0.88, bottom=0.20, left=0.08, right=0.92)
+        
+        plt.close(fig)
         return fig
 
     # ── spray chart ─────────────────────────────────────────────────────────
@@ -3995,15 +4018,20 @@ def server(input, output, session):
                 if c in d.columns: d[c] = pd.to_numeric(d[c], errors="coerce")
             pr_s = d["PlayResult"].astype(str).str.strip() if "PlayResult" in d.columns else pd.Series("",index=d.index)
             inp  = d[pr_s.isin(set(HIT)|{"Out","FieldersChoice","Error"})].dropna(subset=["Direction"])
-            for _, row in inp.iterrows():
-                ang  = np.radians(90 - float(row["Direction"]))
-                ev   = float(row["ExitSpeed"]) if pd.notna(row.get("ExitSpeed")) else 70
-                dist = max(min(ev*1.5, OF-5), IF-10)
-                pr   = str(row.get("PlayResult","")).strip()
-                ax.scatter(dist*np.cos(ang), dist*np.sin(ang),
-                           s=50 if pr in HIT else 35,
-                           color=HIT.get(pr,"#D85A30"), alpha=0.82,
-                           edgecolors="none", zorder=4)
+            inp = inp.copy()
+            inp["_ang"]  = np.radians(90 - inp["Direction"].astype(float))
+            inp["_ev"]   = inp["ExitSpeed"].fillna(70).astype(float)
+            inp["_dist"] = inp["_ev"].apply(lambda ev: max(min(ev * 1.5, OF - 5), IF - 10))
+            inp["_pr"]   = inp["PlayResult"].astype(str).str.strip()
+            inp["_color"] = inp["_pr"].map(lambda pr: HIT.get(pr, "#D85A30"))
+            inp["_size"]  = inp["_pr"].apply(lambda pr: 50 if pr in HIT else 35)
+            for color, grp in inp.groupby("_color", sort=False):
+                ax.scatter(
+                    grp["_dist"] * np.cos(grp["_ang"]),
+                    grp["_dist"] * np.sin(grp["_ang"]),
+                    s=grp["_size"].values,
+                    color=color, alpha=0.82, edgecolors="none", zorder=4,
+                )
         ax.set_xlim(-220,220); ax.set_ylim(-20,230)
         ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([]); ax.grid(False)
         ax.legend(handles=[
@@ -4011,7 +4039,10 @@ def server(input, output, session):
             for l,c in [("Single","#1D9E75"),("Double","#378ADD"),
                         ("Triple","#7B2FBE"),("HR","#BA7517"),("Out","#D85A30")]
         ], loc="lower center", ncol=5, fontsize=7, framealpha=0.8)
-        fig.tight_layout(); return fig
+        fig.tight_layout()
+
+        plt.close(fig)
+        return fig
 
     # ── exit velo vs launch angle ────────────────────────────────────────────
     @output
@@ -4049,7 +4080,7 @@ def server(input, output, session):
 
         plotted = False
         if data is not None and not data.empty and bid:
-            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+            d = data[data["BatterId"].astype(str) == str(bid)]
             for c in ["ExitSpeed", "Angle"]:
                 if c in d.columns:
                     d[c] = pd.to_numeric(d[c], errors="coerce")
@@ -4058,18 +4089,16 @@ def server(input, output, session):
 
             if not d.empty:
                 plotted = True
-                for _, row in d.iterrows():
-                    ht = str(row.get("TaggedHitType", "")).strip()
+                d["_color"] = d["TaggedHitType"].astype(str).str.strip().map(
+                    lambda ht: HT.get(ht, "#aaa")
+                )
+                for color, grp in d.groupby("_color", sort=False):
                     ax.scatter(
-                        row["ExitSpeed"],
-                        row["Angle"],
-                        s=38,
-                        color=HT.get(ht, "#aaa"),
-                        alpha=0.82,
-                        edgecolors="white",
-                        linewidth=0.4,
-                        zorder=3,
+                        grp["ExitSpeed"], grp["Angle"],
+                        s=38, color=color, alpha=0.82,
+                        edgecolors="white", linewidth=0.4, zorder=3,
                     )
+
 
         ax.axhline(0, color="#ccc", lw=0.8, ls="--")
         ax.set_xlim(40, 120)
@@ -4099,6 +4128,8 @@ def server(input, output, session):
         )
 
         fig.subplots_adjust(top=0.96, bottom=0.14, left=0.14, right=0.96)
+
+        plt.close(fig)
         return fig
 
     # ── exit velo distribution (batting practice only) ───────────────────────
@@ -4159,6 +4190,8 @@ def server(input, output, session):
         )
 
         fig.subplots_adjust(top=0.96, bottom=0.14, left=0.14, right=0.96)
+
+        plt.close(fig)
         return fig
 
     # ── plate discipline radar (scrimmage / live only) ───────────────────────
@@ -4246,6 +4279,8 @@ def server(input, output, session):
         ax.spines["polar"].set_visible(False)
 
         fig.subplots_adjust(top=0.96, bottom=0.10, left=0.08, right=0.92)
+
+        plt.close(fig)
         return fig
 
 
