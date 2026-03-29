@@ -22,7 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.lines import Line2D
-from matplotlib.patches import Rectangle, Polygon, FancyBboxPatch
+from matplotlib.patches import Rectangle, Polygon, FancyBboxPatch, Ellipse
 
 import numpy as np
 import pandas as pd
@@ -908,6 +908,8 @@ def compute_pitch_metrics(df: pd.DataFrame, pitcher_id):
             max_velo=("RelSpeed", "max"),
             avg_velo=("RelSpeed", "mean"),
             spin_rate=("SpinRate", "mean"),
+            ivb_avg=("InducedVertBreak", "mean"),
+            hb_avg=("HorzBreak", "mean"),
             strike_pct=("is_strike", "mean"),
             called_strike_n=("is_called_strike", "sum"),
             swings=("is_swing", "sum"),
@@ -1104,10 +1106,31 @@ _date_start_value, _date_end_value = get_initial_date_range(DEFAULT_SEASON)
 # ---------------------------------------------------------------------------
 app_ui = ui.page_fluid(
     ui.tags.style("""
-        body {
-            background-color: #f3f3f3;
+        html, body {
+            width: 100%;
             margin: 0;
+            padding: 0;
+            overflow-x: hidden;
             font-family: Arial, sans-serif;
+            background-color: #f3f3f3;
+        }
+
+        .container-fluid {
+            width: 100% !important;
+            max-width: 100% !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+        }
+
+        .top-header {
+            width: 100%;
+            margin: 0;
+            min-width: 100%;
+            background-color: #000000;
+            border-bottom: 6px solid #DDB945;
+            box-sizing: border-box;
         }
 
         .sidebar .shiny-input-container,
@@ -1119,36 +1142,49 @@ app_ui = ui.page_fluid(
             font-weight: 400 !important;
         }
 
-        /* Purdue header */
         .top-header {
+            width: 100%;
+            margin: 0;
+            min-width: 100%;
             background-color: #000000;
             border-bottom: 6px solid #DDB945;
-            height: 64px;
-            display: flex;
-            align-items: center;
-            padding: 0 18px;
             box-sizing: border-box;
         }
-        .top-header .logo-wrap {
-            width: 160px;           /* reserves space so center title stays centered */
+
+        .header-inner {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            align-items: center;
+            padding: 8px 20px;
+            box-sizing: border-box;
+        }
+
+        .header-left {
             display: flex;
             align-items: center;
+            justify-content: flex-start;
+            padding-left: 18px;
+            box-sizing: border-box;
         }
-        .top-header .logo-wrap img {
+
+        .header-left img {
             height: 40px;
             width: auto;
             display: block;
         }
-        .top-header .title {
-            flex: 1;
+
+        .header-title {
             text-align: center;
             color: #DDB945;
-            font-size: 40px;
+            font-size: 46px;
             font-weight: 900;
             letter-spacing: 0.5px;
+            box-sizing: border-box;
         }
-        .top-header .spacer {
-            width: 160px;           /* matches logo-wrap width for perfect centering */
+
+        .header-right {
+            display: none;
         }
 
         .layout-main {
@@ -1176,6 +1212,7 @@ app_ui = ui.page_fluid(
             flex: 1;
             padding: 16px 20px 22px 20px;
             box-sizing: border-box;
+            overflow-x: auto;
         }
 
         .tabs-wrap .nav-tabs {
@@ -1216,7 +1253,8 @@ app_ui = ui.page_fluid(
             border-radius: 0 0 10px 10px;
             padding: 16px 16px 18px 16px;
             min-height: calc(100vh - 140px);
-            overflow: auto;
+            overflow-y: auto;
+            overflow-x: visible;
             height: auto;
         }
 
@@ -1246,6 +1284,7 @@ app_ui = ui.page_fluid(
             border: 1px solid #d6d6d6;
             border-radius: 10px;
             padding: 10px;
+            overflow: visible;
         }
 
         .card-fixed {
@@ -1271,11 +1310,31 @@ app_ui = ui.page_fluid(
             display: none !important;
         }
 
-        /* Usage table styling */
-        .usage-table-wrap table {
-            width: 100% !important;
-            table-layout: auto !important;
+        .usage-table-wrap {
+            width: 100%;
+            max-width: 100%;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            display: block;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 6px;
+        }
+
+        .usage-table-wrap > div,
+        .usage-table-wrap .table-responsive,
+        .usage-table-wrap .dataframe_container {
+            display: inline-block;
+            min-width: max-content;
+            padding-right: 20px;
+        }
+
+        .usage-table-wrap table,
+        .usage-table-wrap .dataframe {
+            width: max-content !important;
+            min-width: 1600px !important;
             border-collapse: collapse !important;
+            table-layout: auto !important;
+            white-space: nowrap;
         }
 
         /* Header */
@@ -1662,11 +1721,14 @@ app_ui = ui.page_fluid(
     # Purdue header (logo left, title centered)
     ui.tags.div(
         ui.tags.div(
-            ui.tags.img(src=PURDUE_LOGO_SRC, alt="Purdue Logo"),
-            class_="logo-wrap",
+            ui.tags.div(
+                ui.tags.img(src=PURDUE_LOGO_SRC, alt="Purdue Logo"),
+                class_="header-left",
+            ),
+            ui.tags.div("Softball Dashboard", class_="header-title"),
+            ui.tags.div(class_="header-right"),
+            class_="header-inner",
         ),
-        ui.tags.div("Softball Dashboard", class_="title"),
-        ui.tags.div(class_="spacer"),
         class_="top-header",
     ),
 
@@ -2493,53 +2555,61 @@ def server(input, output, session):
 
     @output
     @render.plot
-    def cmp_movement():
-        pur = cmp_purdue_filtered()
-        opp = cmp_opponent_filtered()
+    def movement():
+        mov = pitcher_mov_data()
+        colors = pitch_colors()
 
-        fig, ax = plt.subplots(figsize=(10.5, 4.2))
-        fig.patch.set_facecolor("#ffffff")
-        ax.set_facecolor("#ffffff")
+        fig, ax = plt.subplots(figsize=FIG_SIZE)
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
 
-        if pur is None or pur.empty or opp is None or opp.empty:
-            ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
+        if mov is None or mov.empty:
+            ax.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
             plt.close(fig)
             return fig
 
-        pur_mov = pur[pur[X_MOV].notna() & pur[Y_MOV].notna()]
-        opp_mov = opp[opp[X_MOV].notna() & opp[Y_MOV].notna()]
+        sel = selected_pitch.get()
 
-        if pur_mov.empty and opp_mov.empty:
-            ax.text(0.5, 0.5, "No comparison movement data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-            plt.close(fig)
-            return fig
+        for pt, g in mov.groupby(PITCH_TYPE_COL):
+            color = colors.get(pt, "#777777")
+            is_selected = (sel == pt)
 
-        if not pur_mov.empty:
-            ax.scatter(
-                pur_mov[X_MOV], pur_mov[Y_MOV],
-                s=18, alpha=0.75, color="#DDB945", label="Purdue"
+            gx = pd.to_numeric(g[X_MOV], errors="coerce")
+            gy = pd.to_numeric(g[Y_MOV], errors="coerce")
+            valid = gx.notna() & gy.notna()
+
+            n_points = valid.sum()
+            if n_points < 1:
+                continue
+
+            g_valid = g.loc[valid].copy()
+            g_plot = g_valid.sample(
+                n=min(n_points, 30),
+                random_state=42
             )
 
-        if not opp_mov.empty:
             ax.scatter(
-                opp_mov[X_MOV], opp_mov[Y_MOV],
-                s=18, alpha=0.55, color="#9E9E9E", label="Opponent"
+                g_plot[X_MOV],
+                g_plot[Y_MOV],
+                s=80 if is_selected else 32,
+                alpha=1.0 if (not sel or is_selected) else 0.15,
+                color=color,
+                edgecolors="black" if (not sel or is_selected) else "none",
+                linewidths=0.8 if (not sel or is_selected) else 0,
+                zorder=3 if (not sel or is_selected) else 2,
             )
 
-        ax.axhline(0, linewidth=1, color="#777777")
-        ax.axvline(0, linewidth=1, color="#777777")
-        # set axis range
+        ax.axhline(0, linewidth=1.0, color="#4f83b6", alpha=0.75)
+        ax.axvline(0, linewidth=1.0, color="#4f83b6", alpha=0.75)
+
         ax.set_xlim(-20, 20)
         ax.set_ylim(-20, 20)
-        ax.set_aspect("equal", adjustable = "box")
-        ax.set_xlabel("Horizontal Break (in)")
-        ax.set_ylabel("Induced Vertical Break (in)")
-        ax.grid(True, alpha=0.2)
-        ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.02,1), borderaxespad=0)
-        ax.set_title(cmp_pitch_type_label(), fontsize=13, fontweight="bold", loc ="center")
-        
+
+        ax.set_xlabel("Horizontal break (in)")
+        ax.set_ylabel("Induced vertical break (in)")
+        ax.grid(True, alpha=0.20)
+
         plt.close(fig)
         return fig
 
@@ -3343,6 +3413,7 @@ def server(input, output, session):
                     ui.div(ui.output_table("usage_table"), class_="usage-table-wrap"),
                 )),
             ),
+
         )
 
     # -----------------------------------------------------------------------
@@ -3462,87 +3533,6 @@ def server(input, output, session):
         plt.close(fig)
         return fig
 
-    @output
-    @render.plot
-    def movement():
-        mov = pitcher_mov_data()
-        colors = pitch_colors()
-
-        fig, ax = plt.subplots(figsize=FIG_SIZE)
-        fig.patch.set_facecolor("#f7f7f7")
-        ax.set_facecolor("#f7f7f7")
-
-        if mov is None or mov.empty:
-            ax.text(0.5, 0.5, "No pitch movement data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-            plt.close(fig)
-            return fig
-
-        handles = []
-        legend_labels = []
-
-        sel = selected_pitch.get()
-
-        for pt, g in mov.groupby(PITCH_TYPE_COL):
-            x = g[X_MOV]
-            y = g[Y_MOV]
-            color = colors.get(pt, (0.5, 0.5, 0.5))
-
-            if sel and pt == sel:
-                ax.scatter(
-                    x,
-                    y,
-                    s=110,
-                    alpha=0.16,
-                    color=color,
-                    linewidths=0,
-                    zorder=1,
-                )
-
-            sc = ax.scatter(
-                x,
-                y,
-                s=55 if sel and pt == sel else 25,
-                alpha=1.0 if (not sel or pt == sel) else 0.18,
-                color=color,
-                edgecolors="black",
-                linewidths=0.45,
-                zorder=3 if sel and pt == sel else 2,
-            )
-            handles.append(sc)
-            legend_labels.append(pt)
-
-        ax.axhline(0, linewidth=1)
-        ax.axvline(0, linewidth=1)
-        ax.set_xlim(*MOV_XLIM)
-        ax.set_ylim(*MOV_YLIM)
-        ax.set_xlabel("Horizontal break (in)")
-        ax.set_ylabel("Induced vertical break (in)")
-        ax.grid(True, alpha=0.25)
-
-        lines = []
-        for pt, g in mov.groupby(PITCH_TYPE_COL):
-            avg_hb = g[X_MOV].mean()
-            avg_ivb = g[Y_MOV].mean()
-            color = colors.get(pt, "#555555")
-            lines.append((pt, avg_hb, avg_ivb, color))
-
-        box_text = "\n".join(
-            f"{pt}: HB {avg_hb:+.1f}, IVB {avg_ivb:+.1f}"
-            for pt, avg_hb, avg_ivb, _ in lines
-        )
-        ax.text(
-            0.98, 0.98, box_text,
-            transform=ax.transAxes,
-            fontsize=7,
-            verticalalignment="top",
-            horizontalalignment="right",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="#cccccc", alpha=0.85),
-            family="monospace",
-        )
-
-        plt.close(fig)
-        return fig
 
     @output
     @render.ui
@@ -3598,12 +3588,13 @@ def server(input, output, session):
 
         bullpen_cols = [
             "Pitch type", "Count", "Usage %",
-            "Max Velo", "Avg Velo", "Spin Rate", "Strike %"
+            "Max Velo", "Avg Velo", "Spin Rate", "IVB Avg", "HB Avg", "Strike %"
         ]
 
         live_scrimmage_cols = [
             "Pitch type", "Count", "Usage %",
             "Max Velo", "Avg Velo", "Spin Rate",
+            "IVB Avg", "HB Avg",
             "Strike %", "Called Strike %",
             "Swing %", "SwStrike %",
             "Whiff %", "Zone Swing %",
@@ -3625,6 +3616,8 @@ def server(input, output, session):
         out["max_velo"] = pd.to_numeric(out.get("max_velo"), errors="coerce").round(1)
         out["avg_velo"] = pd.to_numeric(out.get("avg_velo"), errors="coerce").round(1)
         out["spin_rate"] = pd.to_numeric(out.get("spin_rate"), errors="coerce").round(0)
+        out["ivb_avg"] = out["ivb_avg"].map(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+        out["hb_avg"]  = out["hb_avg"].map(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
 
         pct_cols = [
             "usage_pct", "strike_pct", "called_strike_pct",
@@ -3642,6 +3635,8 @@ def server(input, output, session):
             "max_velo": "Max Velo",
             "avg_velo": "Avg Velo",
             "spin_rate": "Spin Rate",
+            "ivb_avg": "IVB Avg",
+            "hb_avg": "HB Avg",
             "strike_pct": "Strike %",
             "called_strike_pct": "Called Strike %",
             "swing_pct": "Swing %",
