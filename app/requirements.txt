@@ -3,4 +3,5 @@ pandas
 matplotlib
 numpy
 jinja2
+scikit-learn>=1.3.0
 shiny>=0.7.0

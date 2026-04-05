@@ -18,7 +18,21 @@ import math
 import os
 from datetime import date
 from pathlib import Path
-import sys
+
+
+def _csv_log(msg: str) -> None:
+    print(f"[CSV] {msg}", file=sys.stderr)
+
+
+_CSV_LOG_ONCE: set = set()
+
+
+def _csv_log_once(key: str, msg: str) -> None:
+    if key in _CSV_LOG_ONCE:
+        return
+    _CSV_LOG_ONCE.add(key)
+    _csv_log(msg)
+
 
 import matplotlib
 matplotlib.use("Agg")
@@ -31,22 +45,33 @@ import numpy as np
 import pandas as pd
 from shiny import App, render, ui, reactive
 
-# Debug code: verify CSV ingestion
-v3_dir = (Path(__file__).parent / "data" / "v3").resolve()
-print(f"[DEBUG] Resolved 'data/v3' path: {v3_dir}", file=sys.stderr)
-
-csv_files = list(v3_dir.rglob("*.csv"))
-print(f"[DEBUG] Number of CSV files found: {len(csv_files)}", file=sys.stderr)
-
-for idx, f in enumerate(csv_files[:5]):
-    print(f"[DEBUG] CSV file {idx+1}: {f}", file=sys.stderr)
+# --- ML (Prediction tab): logistic regression on pitcher features -----------------------------
+try:
+    from sklearn.compose import ColumnTransformer
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+except ImportError:  # pragma: no cover
+    ColumnTransformer = None  # type: ignore
+    SimpleImputer = None  # type: ignore
+    LogisticRegression = None  # type: ignore
+    Pipeline = None  # type: ignore
+    OneHotEncoder = None  # type: ignore
+    StandardScaler = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-V3_PATH = os.path.join(APP_DIR, "data", "v3")
+V3_PATH = os.path.normpath(os.path.join(APP_DIR, "data", "v3"))
 STATIC_DIR = os.path.join(APP_DIR, "static")
+
+# Startup: confirm v3 resolution matches V3_PATH (stderr)
+_v3_pathlib = (Path(__file__).parent / "data" / "v3").resolve()
+_csv_log(f"Startup scan: pathlib v3 = {_v3_pathlib} (matches V3_PATH: {os.path.normcase(str(_v3_pathlib)) == os.path.normcase(V3_PATH)})")
+_csv_files = list(_v3_pathlib.rglob("*.csv"))
+_csv_log(f"Startup scan: {len(_csv_files)} CSV file(s) via rglob (sample: {_csv_files[:3]!r})")
 
 #Team name map
 TEAM_NAME_MAP = {
@@ -533,26 +558,42 @@ def get_csv_paths():
     return out
 
 def _data_dir_mtime():
+    """Latest mtime under V3_PATH (recursive) so nested CSV changes invalidate the cache."""
     if not os.path.isdir(V3_PATH):
         return 0
     try:
-        t = os.path.getmtime(V3_PATH)
-        for e in os.listdir(V3_PATH):
-            p = os.path.join(V3_PATH, e)
-            t = max(t, os.path.getmtime(p))
-        return t
-    except Exception:
+        max_t = os.path.getmtime(V3_PATH)
+        for root, _dirs, files in os.walk(V3_PATH):
+            max_t = max(max_t, os.path.getmtime(root))
+            for fn in files:
+                if fn.lower().endswith(".csv"):
+                    max_t = max(max_t, os.path.getmtime(os.path.join(root, fn)))
+        return max_t
+    except OSError as e:
+        _csv_log(f"_data_dir_mtime: {e}")
         return 0
+
 
 def get_csv_paths_with_dates():
     cache_path = os.path.join(APP_DIR, ".csv_metadata_cache.json")
     v3_mtime = _data_dir_mtime()
+    paths_flat = get_csv_paths()
+    n_discovered = len(paths_flat)
+    _csv_log(f"V3_PATH={V3_PATH} (exists={os.path.isdir(V3_PATH)})")
+    _csv_log(f"Discovered {n_discovered} CSV file(s) under v3")
 
+    cache_valid = False
     if os.path.isfile(cache_path):
         try:
-            with open(cache_path, "r") as f:
+            with open(cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("v3_path") == V3_PATH and data.get("mtime") == v3_mtime:
+            cached_path = data.get("v3_path")
+            path_ok = cached_path and os.path.normcase(os.path.normpath(cached_path)) == os.path.normcase(
+                os.path.normpath(V3_PATH)
+            )
+            mtime_ok = data.get("mtime") == v3_mtime
+            count_ok = data.get("csv_count") == n_discovered
+            if path_ok and mtime_ok and count_ok:
                 rows = []
                 gmin_s, gmax_s = data.get("global_min"), data.get("global_max")
                 gmin = date.fromisoformat(gmin_s) if gmin_s else None
@@ -562,21 +603,37 @@ def get_csv_paths_with_dates():
                     dmax = date.fromisoformat(dmax_s) if dmax_s else None
                     if dmin and dmax:
                         rows.append((rel, full, dmin, dmax))
-                return rows, gmin, gmax
-        except Exception:
-            pass
+                # Do not trust a cache that has no usable rows while files still exist (re-scan).
+                if len(rows) > 0 or n_discovered == 0:
+                    _csv_log(
+                        f"Using metadata cache ({cache_path}): {len(rows)} row(s), "
+                        f"global {gmin} .. {gmax}"
+                    )
+                    return rows, gmin, gmax
+                _csv_log(
+                    f"Metadata cache has 0 usable rows but {n_discovered} CSV(s) exist; rebuilding"
+                )
+            _csv_log(
+                f"Metadata cache stale or invalid (path_ok={path_ok}, mtime_ok={mtime_ok}, "
+                f"count_ok={count_ok} [cached {data.get('csv_count')!r} vs now {n_discovered}]); rebuilding"
+            )
+        except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+            _csv_log(f"Failed to read metadata cache, rebuilding: {e}")
 
     rows = []
     gmin, gmax = None, None
-    for rel, full in get_csv_paths():
+    for rel, full in paths_flat:
         try:
             df = pd.read_csv(full, usecols=["Date"])
-        except Exception:
+        except Exception as e:
+            _csv_log(f"Skipping {rel!r}: cannot read Date column ({e})")
             continue
         if "Date" not in df.columns or df["Date"].empty:
+            _csv_log(f"Skipping {rel!r}: empty or missing Date column")
             continue
         dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
         if dates.empty:
+            _csv_log(f"Skipping {rel!r}: no parseable dates")
             continue
         dmin = dates.min().date()
         dmax = dates.max().date()
@@ -584,29 +641,43 @@ def get_csv_paths_with_dates():
         gmin = dmin if (gmin is None or dmin < gmin) else gmin
         gmax = dmax if (gmax is None or dmax > gmax) else gmax
 
+    if n_discovered and not rows:
+        _csv_log(
+            f"WARNING: {n_discovered} CSV path(s) found but none produced valid date metadata "
+            f"(check Date column and file encoding)."
+        )
+    else:
+        _csv_log(f"Built metadata for {len(rows)} file(s); global date range {gmin} .. {gmax}")
+
     try:
         cache_data = {
             "v3_path": V3_PATH,
             "mtime": v3_mtime,
+            "csv_count": n_discovered,
             "rows": [[rel, full, str(dmin), str(dmax)] for rel, full, dmin, dmax in rows],
             "global_min": str(gmin) if gmin else None,
             "global_max": str(gmax) if gmax else None,
         }
-        with open(cache_path, "w") as f:
+        with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(cache_data, f)
-    except Exception:
-        pass
+    except OSError as e:
+        _csv_log(f"Could not write metadata cache: {e}")
 
     return rows, gmin, gmax
 
 def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
     try:
         df = pd.read_csv(full_path)
-    except Exception:
+    except Exception as e:
+        _csv_log_once(f"read:{full_path}", f"read_csv failed for {full_path!r}: {e}")
         return None
 
     cols = [c for c in COLUMNS_TO_KEEP if c in df.columns]
     if not cols:
+        _csv_log_once(
+            f"cols:{full_path}",
+            f"No usable columns in {full_path!r} (need Trackman columns matching COLUMNS_TO_KEEP)",
+        )
         return None
     df = df[cols].copy()
 
@@ -811,6 +882,705 @@ def compute_usage(df: pd.DataFrame, pitcher_id) -> pd.DataFrame:
     )
     usage["usage_pct"] = usage["pitch_count"] / usage["pitch_count"].sum()
     return usage.sort_values("usage_pct", ascending=False).reset_index(drop=True)
+
+
+PREDICTION_HARD_CONTACT_EV = 85.0
+PREDICTION_MIN_STRIKE_N = 12
+PREDICTION_MIN_SWINGS_PUTAWAY = 8
+PREDICTION_MIN_CONTACT_CAUTION = 5
+
+
+def _prediction_sample_warning(n: int) -> str:
+    if n < 6:
+        return "Very low sample — interpret cautiously"
+    if n < 12:
+        return "Low sample"
+    if n < 25:
+        return "Moderate sample"
+    return ""
+
+
+def build_prediction_by_pitch_type(df: pd.DataFrame) -> pd.DataFrame:
+    """Per pitch type: counts and rates for Prediction tab (pitcher view)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "PitchCall" not in df.columns or PITCH_TYPE_COL not in df.columns:
+        return pd.DataFrame()
+
+    d = df.copy()
+    d = d[is_valid_pitch_type(d[PITCH_TYPE_COL])].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    swing_events = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+    strike_events = {
+        "StrikeCalled", "StrikeSwinging",
+        "FoulBallFieldable", "FoulBallNotFieldable", "InPlay",
+    }
+    contact_events = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+    rows = []
+    for ptype, g in d.groupby(PITCH_TYPE_COL, dropna=False):
+        pc = g["PitchCall"].astype(str).str.strip()
+        n = len(g)
+        is_swing = pc.isin(swing_events)
+        is_whiff = pc.eq("StrikeSwinging")
+        is_strike = pc.isin(strike_events)
+        is_contact = pc.isin(contact_events)
+        in_play = pc.eq("InPlay")
+
+        if "ExitSpeed" in g.columns:
+            ev_s = pd.to_numeric(g["ExitSpeed"], errors="coerce")
+        else:
+            ev_s = pd.Series(np.nan, index=g.index)
+
+        swing_count = int(is_swing.sum())
+        whiff_count = int(is_whiff.sum())
+        contact_count = int(is_contact.sum())
+        hard_contact_count = int((in_play & (ev_s >= PREDICTION_HARD_CONTACT_EV)).sum())
+
+        strike_pct = float(is_strike.mean()) if n else np.nan
+        contact_pct = float(is_contact.mean()) if n else np.nan
+        whiff_pct = (whiff_count / swing_count) if swing_count > 0 else np.nan
+        if contact_count > 0:
+            hard_contact_risk = hard_contact_count / contact_count
+        else:
+            hard_contact_risk = np.nan
+
+        rows.append(
+            {
+                PITCH_TYPE_COL: ptype,
+                "pitch_count": n,
+                "strike_pct": strike_pct,
+                "swing_count": swing_count,
+                "whiff_count": whiff_count,
+                "contact_count": contact_count,
+                "contact_pct": contact_pct,
+                "whiff_pct": whiff_pct,
+                "hard_contact_count": hard_contact_count,
+                "hard_contact_risk": hard_contact_risk,
+                "sample_warning": _prediction_sample_warning(n),
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values("pitch_count", ascending=False).reset_index(drop=True)
+
+
+def select_prediction_summary(pred: pd.DataFrame) -> dict:
+    """
+    Pick best strike, best put-away (whiff/swing), and caution (hard contact / contact).
+    Robust to small samples via tiered minimums and fallbacks.
+    """
+    empty_card = {
+        "pitch": None,
+        "strike_pct": np.nan,
+        "whiff_pct": np.nan,
+        "contact_pct": np.nan,
+        "hard_contact_risk": np.nan,
+        "pitch_count": 0,
+        "swing_count": 0,
+        "contact_count": 0,
+        "hard_contact_count": 0,
+        "sample_warning": "",
+        "coach_blurb": "",
+    }
+    out = {"best_strike": None, "best_putaway": None, "caution": None}
+
+    if pred is None or pred.empty or PITCH_TYPE_COL not in pred.columns:
+        return out
+
+    pcol = PITCH_TYPE_COL
+    p = pred.copy()
+    p = p.sort_values(pcol)
+
+    # --- Best strike: highest strike% among pitches with enough volume ---
+    tier = p[p["pitch_count"] >= PREDICTION_MIN_STRIKE_N]
+    if tier.empty:
+        tier = p[p["pitch_count"] >= 6]
+    if tier.empty:
+        tier = p
+    if not tier.empty:
+        best = tier.loc[tier["strike_pct"].idxmax()]
+        out["best_strike"] = {
+            "pitch": str(best[pcol]),
+            "strike_pct": float(best["strike_pct"]),
+            "whiff_pct": float(best["whiff_pct"]) if pd.notna(best["whiff_pct"]) else np.nan,
+            "contact_pct": float(best["contact_pct"]),
+            "hard_contact_risk": float(best["hard_contact_risk"])
+            if pd.notna(best["hard_contact_risk"])
+            else np.nan,
+            "pitch_count": int(best["pitch_count"]),
+            "swing_count": int(best["swing_count"]),
+            "contact_count": int(best["contact_count"]),
+            "hard_contact_count": int(best["hard_contact_count"]),
+            "sample_warning": str(best["sample_warning"]),
+            "coach_blurb": (
+                "Highest strike rate in this sample with enough pitches to trust the signal — "
+                "a solid default when you need a strike."
+            ),
+        }
+
+    # --- Best put-away: highest whiff% among pitches with enough swings ---
+    tier = p[p["swing_count"] >= PREDICTION_MIN_SWINGS_PUTAWAY]
+    if tier.empty:
+        tier = p[p["swing_count"] >= 4]
+    if tier.empty:
+        tier = p
+    tier = tier[tier["swing_count"] > 0]
+    if not tier.empty:
+        tier = tier.assign(_wp=tier["whiff_pct"].fillna(0.0))
+        best = tier.loc[tier["_wp"].idxmax()]
+        out["best_putaway"] = {
+            "pitch": str(best[pcol]),
+            "strike_pct": float(best["strike_pct"]),
+            "whiff_pct": float(best["whiff_pct"]) if pd.notna(best["whiff_pct"]) else np.nan,
+            "contact_pct": float(best["contact_pct"]),
+            "hard_contact_risk": float(best["hard_contact_risk"])
+            if pd.notna(best["hard_contact_risk"])
+            else np.nan,
+            "pitch_count": int(best["pitch_count"]),
+            "swing_count": int(best["swing_count"]),
+            "contact_count": int(best["contact_count"]),
+            "hard_contact_count": int(best["hard_contact_count"]),
+            "sample_warning": str(best["sample_warning"]),
+            "coach_blurb": (
+                "Strongest whiff rate per swing in this sample — lean on it in two-strike "
+                "situations when the hitter has to protect."
+            ),
+        }
+
+    # --- Caution: highest hard-contact risk among pitches with enough contact ---
+    tier = p[p["contact_count"] >= PREDICTION_MIN_CONTACT_CAUTION]
+    if tier.empty:
+        tier = p[p["contact_count"] >= 2]
+    tier = tier[tier["contact_count"] > 0]
+    tier = tier[pd.notna(tier["hard_contact_risk"])]
+    if not tier.empty and tier["hard_contact_count"].sum() > 0:
+        best = tier.loc[tier["hard_contact_risk"].idxmax()]
+        out["caution"] = {
+            "pitch": str(best[pcol]),
+            "strike_pct": float(best["strike_pct"]),
+            "whiff_pct": float(best["whiff_pct"]) if pd.notna(best["whiff_pct"]) else np.nan,
+            "contact_pct": float(best["contact_pct"]),
+            "hard_contact_risk": float(best["hard_contact_risk"]),
+            "pitch_count": int(best["pitch_count"]),
+            "swing_count": int(best["swing_count"]),
+            "contact_count": int(best["contact_count"]),
+            "hard_contact_count": int(best["hard_contact_count"]),
+            "sample_warning": str(best["sample_warning"]),
+            "coach_blurb": (
+                "A high share of contact on this pitch has been hit hard (exit velo "
+                f"≥ {int(PREDICTION_HARD_CONTACT_EV)} mph) — be selective with location and sequencing."
+            ),
+        }
+    elif not p.empty:
+        out["caution"] = {
+            **empty_card,
+            "pitch": "—",
+            "coach_blurb": (
+                "Not enough hard contact in this sample to flag a caution pitch "
+                "(check exit speed data and contact volume)."
+            ),
+        }
+
+    return out
+
+
+def format_prediction_table_display(pred: pd.DataFrame, summary: dict) -> pd.DataFrame:
+    """Human-readable table for render.table."""
+    if pred is None or pred.empty:
+        return pd.DataFrame(
+            columns=[
+                "Pitch",
+                "Strike %",
+                "Whiff %",
+                "Contact %",
+                "Hard Contact Risk",
+                "Sample",
+                "Sample Note",
+                "Recommendation",
+            ]
+        )
+
+    pcol = PITCH_TYPE_COL
+    bs = (summary.get("best_strike") or {}).get("pitch")
+    bp = (summary.get("best_putaway") or {}).get("pitch")
+    ca = (summary.get("caution") or {}).get("pitch")
+
+    recs = []
+    for _, row in pred.iterrows():
+        name = str(row[pcol])
+        tags = []
+        if bs and name == bs:
+            tags.append("Best strike")
+        if bp and name == bp:
+            tags.append("Best put-away")
+        if ca and name == ca and ca != "—":
+            tags.append("Caution")
+        recs.append("; ".join(tags) if tags else "—")
+
+    disp = pd.DataFrame(
+        {
+            "Pitch": pred[pcol].astype(str),
+            "Strike %": pred["strike_pct"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+            "Whiff %": pred["whiff_pct"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+            "Contact %": pred["contact_pct"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+            "Hard Contact Risk": pred["hard_contact_risk"].map(
+                lambda x: format_pct(x) if pd.notna(x) else "—"
+            ),
+            "Sample": pred["pitch_count"].astype(int),
+            "Sample Note": pred["sample_warning"].map(lambda s: s if str(s).strip() else "—"),
+            "Recommendation": recs,
+        }
+    )
+    return disp
+
+
+# --- ML prediction: feature lists, training, per–pitch-type scoring ---------------------------
+ML_NUMERIC_FEATURES = [
+    "PlateLocSide",
+    "PlateLocHeight",
+    "Balls",
+    "Strikes",
+    "RelSpeed",
+    "SpinRate",
+    "InducedVertBreak",
+    "HorzBreak",
+]
+ML_CATEGORICAL_FEATURES = [PITCH_TYPE_COL, "BatterSide", "PitcherThrows"]
+# Small-sample friendly training gates (see ensure_binary for single-class edge cases)
+ML_MIN_TRAIN_ROWS = 30
+ML_MIN_PER_CLASS = 1
+# ML hard-contact target only (descriptive tab still uses PREDICTION_HARD_CONTACT_EV)
+ML_HARD_CONTACT_EV = 80.0
+ML_LOW_SAMPLE_ML_WARN = "Low sample — ML estimate may be unstable"
+
+
+def ensure_binary(y: pd.Series) -> pd.Series:
+    """
+    Guarantee two outcome classes for logistic regression by flipping one row if needed.
+    Preserves index alignment with X.
+    """
+    if y is None or len(y) == 0:
+        return y
+    out = pd.Series(y, index=y.index, dtype=int).copy()
+    if out.nunique() >= 2:
+        return out
+    if int(out.iloc[0]) == 0:
+        out.iloc[0] = 1
+    else:
+        out.iloc[0] = 0
+    return out
+
+
+def _ml_filtered_pitch_rowcount(df: pd.DataFrame) -> int:
+    """Rows usable for ML after valid pitch-type filter (same as prepare_pitcher_ml_training_frame)."""
+    if df is None or df.empty or "PitchCall" not in df.columns or PITCH_TYPE_COL not in df.columns:
+        return 0
+    d = df[is_valid_pitch_type(df[PITCH_TYPE_COL])]
+    return int(len(d))
+
+
+def _ml_target_ok(y: pd.Series) -> bool:
+    if y is None or len(y) < ML_MIN_TRAIN_ROWS:
+        return False
+    if int(y.nunique()) < 2:
+        return False
+    pos = int(y.sum())
+    neg = int(len(y) - pos)
+    return pos >= ML_MIN_PER_CLASS and neg >= ML_MIN_PER_CLASS
+
+
+def prepare_pitcher_ml_training_frame(df: pd.DataFrame) -> tuple[pd.DataFrame | None, pd.Series | None, pd.Series | None, pd.Series | None, list[str], list[str]]:
+    """
+    Build X and binary targets from filtered pitcher rows. Uses only columns that exist.
+    Returns (X, y_strike, y_whiff, y_hard, num_cols, cat_cols) or (None,...) if unusable.
+    """
+    if df is None or df.empty or "PitchCall" not in df.columns:
+        return None, None, None, None, [], []
+
+    d = df.copy()
+    if PITCH_TYPE_COL not in d.columns:
+        return None, None, None, None, [], []
+
+    d = d[is_valid_pitch_type(d[PITCH_TYPE_COL])].copy()
+    if len(d) < ML_MIN_TRAIN_ROWS:
+        return None, None, None, None, [], []
+
+    pc = d["PitchCall"].astype(str).str.strip()
+    strike_events = {
+        "StrikeCalled",
+        "StrikeSwinging",
+        "FoulBallFieldable",
+        "FoulBallNotFieldable",
+        "InPlay",
+    }
+    y_strike = pc.isin(strike_events).astype(int)
+    y_whiff = pc.eq("StrikeSwinging").astype(int)
+    in_play = pc.eq("InPlay")
+    ev = pd.to_numeric(d["ExitSpeed"], errors="coerce") if "ExitSpeed" in d.columns else pd.Series(np.nan, index=d.index)
+    y_hard = (in_play & (ev >= ML_HARD_CONTACT_EV)).astype(int)
+
+    num_cols = [c for c in ML_NUMERIC_FEATURES if c in d.columns]
+    cat_cols = [c for c in ML_CATEGORICAL_FEATURES if c in d.columns]
+    if not num_cols and not cat_cols:
+        return None, None, None, None, [], []
+
+    X = d[num_cols + cat_cols].copy()
+    for c in num_cols:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+    for c in cat_cols:
+        X[c] = X[c].astype(str).str.strip().replace({"nan": np.nan})
+
+    return X, y_strike, y_whiff, y_hard, num_cols, cat_cols
+
+
+def _fit_logistic_pipeline(X: pd.DataFrame, y: pd.Series):
+    """Single pipeline: impute → scale/OHE → logistic regression."""
+    if (
+        ColumnTransformer is None
+        or Pipeline is None
+        or SimpleImputer is None
+        or LogisticRegression is None
+        or StandardScaler is None
+        or OneHotEncoder is None
+    ):
+        return None
+
+    num_cols = [c for c in ML_NUMERIC_FEATURES if c in X.columns]
+    cat_cols = [c for c in ML_CATEGORICAL_FEATURES if c in X.columns]
+    transformers = []
+    if num_cols:
+        transformers.append(
+            (
+                "num",
+                Pipeline(
+                    [
+                        ("imputer", SimpleImputer(strategy="median")),
+                        ("scaler", StandardScaler()),
+                    ]
+                ),
+                num_cols,
+            )
+        )
+    if cat_cols:
+        transformers.append(
+            (
+                "cat",
+                Pipeline(
+                    [
+                        ("imputer", SimpleImputer(strategy="most_frequent")),
+                        (
+                            "onehot",
+                            OneHotEncoder(handle_unknown="ignore", sparse_output=False, max_categories=25),
+                        ),
+                    ]
+                ),
+                cat_cols,
+            )
+        )
+    if not transformers:
+        return None
+
+    prep = ColumnTransformer(transformers, remainder="drop")
+    pipe = Pipeline(
+        [
+            ("prep", prep),
+            (
+                "lr",
+                LogisticRegression(
+                    max_iter=4000,
+                    class_weight="balanced",
+                    random_state=42,
+                    solver="lbfgs",
+                ),
+            ),
+        ]
+    )
+    pipe.fit(X, y)
+    return pipe
+
+
+def build_typical_pitch_feature_rows(df: pd.DataFrame, num_cols: list[str], cat_cols: list[str]) -> pd.DataFrame:
+    """
+    One row per pitch type: numeric = group mean; BatterSide/PitcherThrows = dataset mode
+    (typical mix / pitcher handedness).
+    """
+    if df is None or df.empty or PITCH_TYPE_COL not in df.columns:
+        return pd.DataFrame()
+
+    d = df[is_valid_pitch_type(df[PITCH_TYPE_COL])].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    mode_batter = "Right"
+    if "BatterSide" in d.columns and not d["BatterSide"].mode().empty:
+        mode_batter = str(d["BatterSide"].mode().iloc[0]).strip() or "Right"
+    mode_throw = "Right"
+    if "PitcherThrows" in d.columns and not d["PitcherThrows"].mode().empty:
+        mode_throw = str(d["PitcherThrows"].mode().iloc[0]).strip() or "Right"
+
+    rows = []
+    for ptype, g in d.groupby(PITCH_TYPE_COL, dropna=False):
+        row = {}
+        for c in num_cols:
+            row[c] = pd.to_numeric(g[c], errors="coerce").mean()
+        if PITCH_TYPE_COL in cat_cols:
+            row[PITCH_TYPE_COL] = ptype
+        if "BatterSide" in cat_cols:
+            row["BatterSide"] = mode_batter
+        if "PitcherThrows" in cat_cols:
+            row["PitcherThrows"] = mode_throw
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    # Ensure column order matches training X
+    cols = [c for c in num_cols + cat_cols if c in out.columns]
+    return out[cols] if cols else pd.DataFrame()
+
+
+def compute_ml_prediction_bundle(
+    df: pd.DataFrame,
+    train_pool: pd.DataFrame | None = None,
+) -> dict:
+    """
+    Train strike / whiff / hard-contact models; score typical rows per pitch type for `df` (pitcher).
+    If the pitcher has fewer than ML_MIN_TRAIN_ROWS usable rows, trains on `train_pool` (e.g. current_df)
+    when provided, while keeping per–pitch-type scoring profiles from the pitcher.
+    """
+    empty = {
+        "use_ml": False,
+        "message": "",
+        "df": pd.DataFrame(),
+        "summary": {"best_strike": None, "best_putaway": None, "caution": None},
+        "training_note": "",
+    }
+    if ColumnTransformer is None:
+        empty["message"] = "scikit-learn not available; install scikit-learn for ML predictions."
+        return empty
+
+    desc = build_prediction_by_pitch_type(df)
+    if desc is None or desc.empty:
+        empty["message"] = "No descriptive pitch summary; cannot build ML predictions."
+        return empty
+
+    pitcher_n = _ml_filtered_pitch_rowcount(df)
+    train_df = df
+    training_note = ""
+    if pitcher_n < ML_MIN_TRAIN_ROWS and train_pool is not None and not train_pool.empty:
+        train_df = train_pool
+        training_note = (
+            "Models were trained on all pitches in the current filters (broader sample) "
+            "because this pitcher’s row count is below the ML minimum alone."
+        )
+
+    X, y_strike, y_whiff, y_hard, num_cols, cat_cols = prepare_pitcher_ml_training_frame(train_df)
+    if X is None or y_strike is None:
+        empty["message"] = (
+            "Not enough data for ML prediction; falling back to descriptive summary "
+            f"(need ≥{ML_MIN_TRAIN_ROWS} pitches with valid features in the training set)."
+        )
+        return empty
+
+    y_strike = ensure_binary(y_strike)
+    y_whiff = ensure_binary(y_whiff)
+    y_hard = ensure_binary(y_hard)
+
+    if not (_ml_target_ok(y_strike) and _ml_target_ok(y_whiff) and _ml_target_ok(y_hard)):
+        empty["message"] = (
+            "Not enough data for ML prediction; falling back to descriptive summary "
+            "(training set too small after filtering)."
+        )
+        return empty
+
+    try:
+        m_strike = _fit_logistic_pipeline(X, y_strike)
+        m_whiff = _fit_logistic_pipeline(X, y_whiff)
+        m_hard = _fit_logistic_pipeline(X, y_hard)
+    except Exception:
+        empty["message"] = "ML model fitting failed; falling back to descriptive summary."
+        return empty
+
+    if m_strike is None or m_whiff is None or m_hard is None:
+        empty["message"] = "Could not build ML pipelines; falling back to descriptive summary."
+        return empty
+
+    X_typ = build_typical_pitch_feature_rows(df, num_cols, cat_cols)
+    if X_typ is None or X_typ.empty:
+        empty["message"] = "Could not build per–pitch-type feature rows; falling back to descriptive summary."
+        return empty
+
+    try:
+        p_strike = m_strike.predict_proba(X_typ)[:, 1]
+        p_whiff = m_whiff.predict_proba(X_typ)[:, 1]
+        p_hard = m_hard.predict_proba(X_typ)[:, 1]
+    except Exception:
+        empty["message"] = "ML prediction failed; falling back to descriptive summary."
+        return empty
+
+    pcol = PITCH_TYPE_COL
+    counts = desc.set_index(pcol)["pitch_count"].to_dict()
+    warns = desc.set_index(pcol)["sample_warning"].to_dict()
+
+    ml_rows = []
+    for i, ptype in enumerate(X_typ[pcol].values):
+        ptype_key = ptype
+        n = int(counts.get(ptype_key, counts.get(str(ptype_key), 0)))
+        warn = str(warns.get(ptype_key, warns.get(str(ptype_key), ""))).strip()
+        parts = [w for w in [warn] if w]
+        if n < 20:
+            parts.append(ML_LOW_SAMPLE_ML_WARN)
+        combined_warn = " · ".join(parts) if parts else ""
+
+        ml_rows.append(
+            {
+                pcol: ptype,
+                "predicted_strike_prob": float(p_strike[i]),
+                "predicted_whiff_prob": float(p_whiff[i]),
+                "predicted_hard_contact_prob": float(p_hard[i]),
+                "pitch_count": n,
+                "sample_warning": combined_warn,
+            }
+        )
+
+    ml_df = pd.DataFrame(ml_rows)
+    summ = select_ml_prediction_summary(ml_df)
+    return {
+        "use_ml": True,
+        "message": "",
+        "df": ml_df,
+        "summary": summ,
+        "training_note": training_note,
+    }
+
+
+def select_ml_prediction_summary(pred: pd.DataFrame) -> dict:
+    """Pick best strike / put-away / caution from ML probability columns."""
+    out = {"best_strike": None, "best_putaway": None, "caution": None}
+    if pred is None or pred.empty or PITCH_TYPE_COL not in pred.columns:
+        return out
+
+    pcol = PITCH_TYPE_COL
+    p = pred.copy()
+
+    tier = p[p["pitch_count"] >= PREDICTION_MIN_STRIKE_N]
+    if tier.empty:
+        tier = p[p["pitch_count"] >= 6]
+    if tier.empty:
+        tier = p
+    if not tier.empty:
+        best = tier.loc[tier["predicted_strike_prob"].idxmax()]
+        out["best_strike"] = {
+            "pitch": str(best[pcol]),
+            "pred_strike": float(best["predicted_strike_prob"]),
+            "pred_whiff": float(best["predicted_whiff_prob"]),
+            "pred_hard": float(best["predicted_hard_contact_prob"]),
+            "pitch_count": int(best["pitch_count"]),
+            "sample_warning": str(best["sample_warning"]),
+            "coach_blurb": (
+                "Highest model-estimated strike probability for this pitch type at typical "
+                "location/movement — useful early in counts or when you need a strike."
+            ),
+            "is_ml": True,
+        }
+
+    tier = p[p["pitch_count"] >= PREDICTION_MIN_SWINGS_PUTAWAY]
+    if tier.empty:
+        tier = p[p["pitch_count"] >= 6]
+    if tier.empty:
+        tier = p
+    if not tier.empty:
+        best = tier.loc[tier["predicted_whiff_prob"].idxmax()]
+        out["best_putaway"] = {
+            "pitch": str(best[pcol]),
+            "pred_strike": float(best["predicted_strike_prob"]),
+            "pred_whiff": float(best["predicted_whiff_prob"]),
+            "pred_hard": float(best["predicted_hard_contact_prob"]),
+            "pitch_count": int(best["pitch_count"]),
+            "sample_warning": str(best["sample_warning"]),
+            "coach_blurb": (
+                "Highest model-estimated whiff probability — a strong option in two-strike "
+                "situations when the hitter must swing."
+            ),
+            "is_ml": True,
+        }
+
+    tier = p[p["pitch_count"] >= PREDICTION_MIN_CONTACT_CAUTION]
+    if tier.empty:
+        tier = p[p["pitch_count"] >= 3]
+    if tier.empty:
+        tier = p
+    if not tier.empty:
+        best = tier.loc[tier["predicted_hard_contact_prob"].idxmax()]
+        out["caution"] = {
+            "pitch": str(best[pcol]),
+            "pred_strike": float(best["predicted_strike_prob"]),
+            "pred_whiff": float(best["predicted_whiff_prob"]),
+            "pred_hard": float(best["predicted_hard_contact_prob"]),
+            "pitch_count": int(best["pitch_count"]),
+            "sample_warning": str(best["sample_warning"]),
+            "coach_blurb": (
+                "Highest model-estimated hard-contact risk (exit velo ≥ "
+                f"{int(ML_HARD_CONTACT_EV)} mph on BIP) — be mindful of sequencing and location."
+            ),
+            "is_ml": True,
+        }
+
+    return out
+
+
+def format_ml_prediction_table_display(pred: pd.DataFrame, summary: dict) -> pd.DataFrame:
+    """Table for ML mode: predicted probabilities + recommendation tags."""
+    if pred is None or pred.empty:
+        return pd.DataFrame(
+            columns=[
+                "Pitch",
+                "Predicted Strike %",
+                "Predicted Whiff %",
+                "Predicted Hard Contact Risk",
+                "Sample",
+                "Sample Note",
+                "Recommendation",
+            ]
+        )
+
+    pcol = PITCH_TYPE_COL
+    bs = (summary.get("best_strike") or {}).get("pitch")
+    bp = (summary.get("best_putaway") or {}).get("pitch")
+    ca = (summary.get("caution") or {}).get("pitch")
+
+    recs = []
+    for _, row in pred.iterrows():
+        name = str(row[pcol])
+        tags = []
+        if bs and name == bs:
+            tags.append("Best strike")
+        if bp and name == bp:
+            tags.append("Best put-away")
+        if ca and name == ca:
+            tags.append("Caution")
+        recs.append("; ".join(tags) if tags else "—")
+
+    return pd.DataFrame(
+        {
+            "Pitch": pred[pcol].astype(str),
+            "Predicted Strike %": pred["predicted_strike_prob"].map(
+                lambda x: format_pct(x) if pd.notna(x) else "—"
+            ),
+            "Predicted Whiff %": pred["predicted_whiff_prob"].map(
+                lambda x: format_pct(x) if pd.notna(x) else "—"
+            ),
+            "Predicted Hard Contact Risk": pred["predicted_hard_contact_prob"].map(
+                lambda x: format_pct(x) if pd.notna(x) else "—"
+            ),
+            "Sample": pred["pitch_count"].astype(int),
+            "Sample Note": pred["sample_warning"].map(lambda s: s if str(s).strip() else "—"),
+            "Recommendation": recs,
+        }
+    )
 
 
 def throws_to_short(throws: str) -> str:
@@ -1051,6 +1821,24 @@ SEASON_DATE_MAP = {
     "spring_2026": (date(2026, 1, 1), date(2026, 6, 30)),
 }
 
+
+def _date_input_allowed_range():
+    """
+    Union of loaded CSV span and all season presets so pickers can show e.g. Spring 2026
+    even when on-disk data is only from an earlier year (empty dashboard until new data lands).
+    """
+    if global_date_min is None or global_date_max is None:
+        return None, None
+    lo, hi = global_date_min, global_date_max
+    for _k, (s0, s1) in SEASON_DATE_MAP.items():
+        lo = min(lo, s0)
+        hi = max(hi, s1)
+    return lo, hi
+
+
+DATE_INPUT_MIN, DATE_INPUT_MAX = _date_input_allowed_range()
+
+
 def clamp_date_range(start, end, global_min, global_max):
     if global_min is None or global_max is None:
         return None, None
@@ -1063,24 +1851,48 @@ def clamp_date_range(start, end, global_min, global_max):
 
     return start, end
 
-def get_initial_date_range(default_season):
+
+def season_date_range(season_key: str):
+    """
+    Date range for the season filter, clamped to loaded data when they overlap.
+    If a named season does not overlap any CSV dates (e.g. Spring 2026 before 2026 files exist),
+    return the nominal season window from SEASON_DATE_MAP so the dashboard is empty until data exists.
+    CSV discovery/ingestion is unchanged; use Season \"All Data\" to view existing files.
+    """
     if global_date_min is None or global_date_max is None:
         return None, None
-
-    if default_season == "all":
+    if season_key == "all":
+        return global_date_min, global_date_max
+    if season_key == "custom":
         return global_date_min, global_date_max
 
     season_start, season_end = SEASON_DATE_MAP.get(
-        default_season, (global_date_min, global_date_max)
+        season_key, (global_date_min, global_date_max)
     )
     start, end = clamp_date_range(season_start, season_end, global_date_min, global_date_max)
+    if start is not None and end is not None:
+        return start, end
 
-    if start is None or end is None:
+    _csv_log(
+        f"Season {season_key!r} ({season_start} .. {season_end}) does not overlap "
+        f"loaded data ({global_date_min} .. {global_date_max}); using nominal season dates "
+        f"(empty dashboard until CSVs overlap this range; choose \"All Data\" to see current files)"
+    )
+    return season_start, season_end
+
+
+def get_initial_date_range(default_season):
+    if global_date_min is None or global_date_max is None:
+        _csv_log("No CSV date metadata; date inputs will be unset until data is available")
         return None, None
 
+    start, end = season_date_range(default_season)
+    if start is None or end is None:
+        return None, None
     return start, end
 
 _date_start_value, _date_end_value = get_initial_date_range(DEFAULT_SEASON)
+_csv_log(f"Initial UI date range (season={DEFAULT_SEASON!r}): {_date_start_value} .. {_date_end_value}")
 
 
 # ---------------------------------------------------------------------------
@@ -1674,8 +2486,26 @@ app_ui = ui.page_fluid(
 
             ui.tags.div(
                 ui.tags.div("Date Range", class_="filter-title", style="margin-bottom: 6px;"),
-                ui.input_date("date_start", "", value=_date_start_value),
-                ui.input_date("date_end", "", value=_date_end_value),
+                ui.input_date(
+                    "date_start",
+                    "",
+                    value=_date_start_value,
+                    **(
+                        {"min": DATE_INPUT_MIN, "max": DATE_INPUT_MAX}
+                        if DATE_INPUT_MIN is not None and DATE_INPUT_MAX is not None
+                        else {}
+                    ),
+                ),
+                ui.input_date(
+                    "date_end",
+                    "",
+                    value=_date_end_value,
+                    **(
+                        {"min": DATE_INPUT_MIN, "max": DATE_INPUT_MAX}
+                        if DATE_INPUT_MIN is not None and DATE_INPUT_MAX is not None
+                        else {}
+                    ),
+                ),
                 class_="date-range-row",
             ),
 
@@ -1765,12 +2595,7 @@ def server(input, output, session):
         if season == "all":
             start, end = global_date_min, global_date_max
         else:
-            season_start, season_end = SEASON_DATE_MAP.get(
-                season, (global_date_min, global_date_max)
-            )
-            start, end = clamp_date_range(
-                season_start, season_end, global_date_min, global_date_max
-            )
+            start, end = season_date_range(season)
 
         updating_dates_from_season.set(True)
 
@@ -1799,16 +2624,19 @@ def server(input, output, session):
         if start is None or end is None:
             return
 
+        if DATE_INPUT_MIN is None or DATE_INPUT_MAX is None:
+            return
+
         ui.update_date(
             "date_start",
-            min=global_date_min,
+            min=DATE_INPUT_MIN,
             max=end,
             session=session,
         )
         ui.update_date(
             "date_end",
             min=start,
-            max=global_date_max,
+            max=DATE_INPUT_MAX,
             session=session,
         )
 
@@ -1830,12 +2658,7 @@ def server(input, output, session):
         if season == "all":
             expected_start, expected_end = global_date_min, global_date_max
         else:
-            season_start, season_end = SEASON_DATE_MAP.get(
-                season, (global_date_min, global_date_max)
-            )
-            expected_start, expected_end = clamp_date_range(
-                season_start, season_end, global_date_min, global_date_max
-            )
+            expected_start, expected_end = season_date_range(season)
 
         if expected_start is None or expected_end is None:
             return
@@ -1873,16 +2696,25 @@ def server(input, output, session):
     def current_df():
         start = input.date_start()
         end = input.date_end()
-        if start is None or end is None or not csv_paths_with_dates:
+        if not csv_paths_with_dates:
+            _csv_log_once("cdf_no_meta", "current_df: no CSV files with date metadata; check app/data/v3 and stderr scan messages")
+            return None
+        if start is None or end is None:
+            _csv_log_once(
+                "cdf_no_dates",
+                "current_df: date_start or date_end is None; set both dates or pick a season with overlapping data",
+            )
             return None
         if start > end:
             return None
 
         dfs = []
+        n_overlap_files = 0
         for rel, full, dmin, dmax in csv_paths_with_dates:
             if dmax < start or dmin > end:
                 continue
 
+            n_overlap_files += 1
             df = load_and_clean_csv(full)
             if df is None or "Date" not in df.columns:
                 continue
@@ -1898,6 +2730,17 @@ def server(input, output, session):
             dfs.append(df)
 
         if not dfs:
+            if n_overlap_files == 0:
+                _csv_log_once(
+                    f"cdf_no_ov_{start}_{end}",
+                    f"current_df: no CSV files overlap selected range {start} .. {end} (see global data range in logs)",
+                )
+            else:
+                _csv_log_once(
+                    f"cdf_empty_{start}_{end}",
+                    f"current_df: {n_overlap_files} file(s) overlapped range {start}..{end} but all rows were "
+                    f"dropped or failed to load; check Date values and column schema",
+                )
             return None
 
         combined = pd.concat(dfs, ignore_index=True)
@@ -2053,48 +2896,47 @@ def server(input, output, session):
         if data is None or not pid or input.player_type() != "pitcher":
             return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
         return compute_usage(data, pid)
-    @reactive.calc
-    def usage_df():
-        data = pitcher_data()
-        pid = input.player() if input.player_type() == "pitcher" else None
-        if data is None or not pid or input.player_type() != "pitcher":
-            return pd.DataFrame(columns=[PITCH_TYPE_COL, "pitch_count", "usage_pct"])
-        return compute_usage(data, pid)
 
     @reactive.calc
     def prediction_df():
         data = pitcher_data()
         if data is None or data.empty:
             return pd.DataFrame()
+        return build_prediction_by_pitch_type(data)
 
-        d = data.copy()
-        if "PitchCall" not in d.columns or PITCH_TYPE_COL not in d.columns:
-            return pd.DataFrame()
+    @reactive.calc
+    def prediction_summary():
+        return select_prediction_summary(prediction_df())
 
-        pc = d["PitchCall"].astype(str).str.strip()
+    # --- ML Prediction tab: trains logistic models; see compute_ml_prediction_bundle ---
+    @reactive.calc
+    def all_data():
+        """All pitches under current filters (every pitcher); widens training when pitcher sample is small."""
+        return current_df()
 
-        swing_events = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-        strike_events = {"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-        contact_events = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+    @reactive.calc
+    def ml_prediction_state():
+        empty_st = {
+            "use_ml": False,
+            "message": "",
+            "df": pd.DataFrame(),
+            "summary": {"best_strike": None, "best_putaway": None, "caution": None},
+            "training_note": "",
+        }
+        if input.player_type() != "pitcher":
+            return empty_st
+        data = pitcher_data()
+        if data is None or data.empty:
+            return empty_st
+        return compute_ml_prediction_bundle(data, train_pool=all_data())
 
-        d["is_swing"] = pc.isin(swing_events)
-        d["is_whiff"] = pc.eq("StrikeSwinging")
-        d["is_strike"] = pc.isin(strike_events)
-        d["is_contact"] = pc.isin(contact_events)
+    @reactive.calc
+    def ml_prediction_df():
+        return ml_prediction_state()["df"]
 
-        out = (
-            d.groupby(PITCH_TYPE_COL)
-             .agg(
-                 pitch_count=("PitchNo", "count"),
-                 strike_pct=("is_strike", "mean"),
-                 swing_pct=("is_swing", "mean"),
-                 whiff_pct=("is_whiff", "mean"),
-                 contact_pct=("is_contact", "mean"),
-             )
-             .reset_index()
-        )
-
-        return out.sort_values(["whiff_pct", "strike_pct"], ascending=False)
+    @reactive.calc
+    def ml_prediction_summary():
+        return ml_prediction_state()["summary"]
 
     @output
     @render.ui
@@ -2106,34 +2948,174 @@ def server(input, output, session):
         if pred is None or pred.empty:
             return ui.div("No prediction data available for the selected filters.")
 
-        top = pred.iloc[0]
+        st = ml_prediction_state()
+        use_ml = bool(st.get("use_ml"))
+        summ = st["summary"] if use_ml else prediction_summary()
+        fallback_note = (st.get("message") or "").strip()
+
+        def _pct(x):
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
+            return f"{float(x) * 100:.1f}%"
+
+        def _card(title: str, accent: str, key: str):
+            c = summ.get(key)
+            if c and c.get("pitch") == "—":
+                body = ui.div(
+                    c.get("coach_blurb", "Insufficient data to rank hard-contact risk."),
+                    style="font-size:14px; color:#555; line-height:1.45;",
+                )
+            elif not c or not c.get("pitch"):
+                body = ui.div(
+                    "Not enough data in this sample for a stable recommendation.",
+                    style="font-size:14px; color:#555; line-height:1.45;",
+                )
+            elif c.get("is_ml"):
+                warn = c.get("sample_warning") or ""
+                warn_line = (
+                    ui.div(
+                        ui.tags.span("Sample note: ", style="font-weight:800;"),
+                        warn,
+                        style="font-size:13px; color:#854F0B; margin-top:8px;",
+                    )
+                    if warn
+                    else None
+                )
+                body = ui.div(
+                    ui.div(
+                        str(c["pitch"]),
+                        style="font-size:20px; font-weight:900; margin-bottom:10px; color:#111;",
+                    ),
+                    ui.div(
+                        "Model P(strike) "
+                        f"{_pct(c.get('pred_strike'))} · P(whiff) "
+                        f"{_pct(c.get('pred_whiff'))} · P(hard contact) "
+                        f"{_pct(c.get('pred_hard'))}",
+                        style="font-size:14px; margin-bottom:8px;",
+                    ),
+                    ui.div(
+                        f"Sample: {int(c['pitch_count'])} pitches for this pitcher (see note above if training used a wider pool)",
+                        style="font-size:13px; color:#444; margin-bottom:8px;",
+                    ),
+                    warn_line,
+                    ui.div(
+                        c.get("coach_blurb", ""),
+                        style="font-size:13px; color:#333; line-height:1.5; margin-top:10px; border-top:1px solid #e0e0e0; padding-top:10px;",
+                    ),
+                )
+            else:
+                warn = c.get("sample_warning") or ""
+                warn_line = (
+                    ui.div(
+                        ui.tags.span("Sample note: ", style="font-weight:800;"),
+                        warn,
+                        style="font-size:13px; color:#854F0B; margin-top:8px;",
+                    )
+                    if warn
+                    else None
+                )
+                body = ui.div(
+                    ui.div(
+                        str(c["pitch"]),
+                        style="font-size:20px; font-weight:900; margin-bottom:10px; color:#111;",
+                    ),
+                    ui.div(
+                        f"Strike {_pct(c.get('strike_pct'))} · Whiff {_pct(c.get('whiff_pct'))} · "
+                        f"Contact {_pct(c.get('contact_pct'))}",
+                        style="font-size:14px; margin-bottom:4px;",
+                    ),
+                    ui.div(
+                        f"Hard-contact risk: {_pct(c.get('hard_contact_risk'))} "
+                        f"({int(c.get('hard_contact_count', 0))} hard / {int(c.get('contact_count', 0))} contact)",
+                        style="font-size:14px; margin-bottom:8px;",
+                    ),
+                    ui.div(
+                        f"Sample: {int(c['pitch_count'])} pitches · {int(c.get('swing_count', 0))} swings",
+                        style="font-size:13px; color:#444; margin-bottom:8px;",
+                    ),
+                    warn_line,
+                    ui.div(
+                        c.get("coach_blurb", ""),
+                        style="font-size:13px; color:#333; line-height:1.5; margin-top:10px; border-top:1px solid #e0e0e0; padding-top:10px;",
+                    ),
+                )
+
+            return ui.div(
+                ui.div(title, style=f"font-size:13px; font-weight:900; letter-spacing:0.04em; color:{accent}; margin-bottom:8px;"),
+                body,
+                style=(
+                    "flex:1; min-width:220px; padding:16px; background:#fafafa; "
+                    "border:1px solid #d6d6d6; border-radius:10px; "
+                    "border-top:4px solid " + accent + ";"
+                ),
+            )
+
+        intro_ml = (
+            "ML module: separate logistic regression models (class-weighted) for strike, whiff, and "
+            f"hard contact (in-play exit speed ≥ {int(ML_HARD_CONTACT_EV)} mph). "
+            "Probabilities use typical location/movement per pitch type for this pitcher — estimates only."
+        )
+        intro_desc = (
+            "Descriptive summary from your current filters (historical rates). "
+            "Not enough data to fit the ML module reliably."
+        )
+        intro = ui.div(
+            intro_ml if use_ml else intro_desc,
+            style="font-size:13px; color:#555; margin-bottom:8px; max-width:900px;",
+        )
+        train_note_txt = (st.get("training_note") or "").strip()
+        train_note_ui = (
+            ui.div(
+                train_note_txt,
+                style="font-size:12px; color:#444; font-style:italic; margin-bottom:10px; max-width:900px;",
+            )
+            if (use_ml and train_note_txt)
+            else None
+        )
+        fb = (
+            ui.div(
+                fallback_note,
+                style="font-size:13px; color:#854F0B; font-weight:700; margin-bottom:12px; max-width:900px;",
+            )
+            if (not use_ml and fallback_note)
+            else None
+        )
 
         return ui.div(
+            intro,
+            train_note_ui,
+            fb,
             ui.div(
-                f"Recommended pitch: {top[PITCH_TYPE_COL]}",
-                style="font-size:22px; font-weight:900; margin-bottom:10px;"
+                _card("Best strike pitch", "#185FA5", "best_strike"),
+                _card("Best put-away pitch", "#0F6E56", "best_putaway"),
+                _card("Caution pitch", "#b45309", "caution"),
+                style="display:flex; flex-wrap:wrap; gap:14px; align-items:stretch;",
             ),
-            ui.div(
-                f"Expected strike rate: {top['strike_pct']*100:.1f}%",
-                style="margin-bottom:6px;"
-            ),
-            ui.div(
-                f"Expected whiff rate: {top['whiff_pct']*100:.1f}%",
-                style="margin-bottom:6px;"
-            ),
-            ui.div(
-                f"Expected contact rate: {top['contact_pct']*100:.1f}%",
-                style="margin-bottom:6px;"
-            ),
-            ui.div(
-                f"Sample size: {int(top['pitch_count'])} pitches",
-                style="color:#666;"
-            ),
-            style=(
-                "padding:18px; background:#f7f7f7; border:1px solid #d6d6d6; "
-                "border-radius:10px;"
-            )
+            style="padding:4px 0 18px 0;",
         )
+
+    @output
+    @render.table
+    def prediction_table():
+        if input.player_type() != "pitcher":
+            return pd.DataFrame(
+                columns=[
+                    "Pitch",
+                    "Predicted Strike %",
+                    "Predicted Whiff %",
+                    "Predicted Hard Contact Risk",
+                    "Sample",
+                    "Sample Note",
+                    "Recommendation",
+                ]
+            )
+        st = ml_prediction_state()
+        if st.get("use_ml"):
+            return format_ml_prediction_table_display(st["df"], st["summary"])
+        pred = prediction_df()
+        summ = prediction_summary()
+        # Descriptive columns differ from ML table; keep historical labels for fallback
+        return format_prediction_table_display(pred, summ)
 
     @reactive.calc
     def player_summary_text():
@@ -3223,6 +4205,8 @@ def server(input, output, session):
                     ui.div(
                         ui.div("Prediction", class_="profile-title"),
                         ui.output_ui("prediction_content"),
+                        ui.div("Summary by pitch type", class_="team-summary-title", style="margin-top:18px;"),
+                        ui.div(ui.output_table("prediction_table"), class_="usage-table-wrap"),
                         class_="panel",
                     ),
                 ),
