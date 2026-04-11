@@ -11,8 +11,6 @@ Layout (matches sketch):
       2x2 grid: Usage pie, Location, Summary table, Movement
 """
 
-import glob
-import json
 import math
 import os
 from datetime import date
@@ -26,6 +24,8 @@ from matplotlib.patches import Rectangle, Polygon, FancyBboxPatch, Ellipse
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
+from google.api_core.client_options import ClientOptions
+from google.cloud import bigquery
 from shiny import App, render, ui, reactive
 
 
@@ -33,7 +33,6 @@ from shiny import App, render, ui, reactive
 # Config
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-V3_PATH = os.path.join(APP_DIR, "data", "v3")
 STATIC_DIR = os.path.join(APP_DIR, "static")
 
 #Team name map
@@ -340,6 +339,67 @@ PITCH_TYPE_COL = "TaggedPitchType"
 X_MOV = "HorzBreak"
 Y_MOV = "InducedVertBreak"
 
+# BigQuery fact_pitch may use snake_case; plots expect Trackman-style names.
+_FACT_SNAKE_TO_APP = {
+    "pitch_no": "PitchNo",
+    "pitchof_pa": "PitchofPA",
+    "date": "Date",
+    "time": "Time",
+    "pitcher": "Pitcher",
+    "pitcher_id": "PitcherId",
+    "pitcher_throws": "PitcherThrows",
+    "pitcher_team": "PitcherTeam",
+    "batter": "Batter",
+    "batter_id": "BatterId",
+    "batter_side": "BatterSide",
+    "batter_team": "BatterTeam",
+    "balls": "Balls",
+    "strikes": "Strikes",
+    "pitch_call": "PitchCall",
+    "tagged_pitch_type": "TaggedPitchType",
+    "rel_speed": "RelSpeed",
+    "spin_rate": "SpinRate",
+    "spin_axis": "SpinAxis",
+    "tilt": "Tilt",
+    "induced_vert_break": "InducedVertBreak",
+    "horz_break": "HorzBreak",
+    "plate_loc_height": "PlateLocHeight",
+    "plate_loc_side": "PlateLocSide",
+    "tagged_hit_type": "TaggedHitType",
+    "play_result": "PlayResult",
+    "kor_bb": "KorBB",
+    "exit_speed": "ExitSpeed",
+    "angle": "Angle",
+    "direction": "Direction",
+    "date_only": "DateOnly",
+    "data_source": "DataSource",
+    "session_type": "SessionType",
+    "session_type_reason": "SessionTypeReason",
+}
+
+
+def normalize_fact_pitch_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    df = df.rename(
+        columns={k: v for k, v in _FACT_SNAKE_TO_APP.items() if k in df.columns}
+    )
+    if "DateOnly" in df.columns and "Date" not in df.columns:
+        df["Date"] = pd.to_datetime(df["DateOnly"], errors="coerce")
+    elif "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    if "DateOnly" not in df.columns and "Date" in df.columns:
+        df["DateOnly"] = df["Date"].dt.date
+    elif "DateOnly" in df.columns:
+        df["DateOnly"] = pd.to_datetime(df["DateOnly"], errors="coerce").dt.date
+    for c in [
+        "Pitcher", "Batter", PITCH_TYPE_COL, "PitchCall",
+        "PitcherTeam", "BatterTeam", "PitcherThrows", "BatterSide",
+    ]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+    return df
+
 # Fixed strike zone (feet)
 ZONE_LEFT, ZONE_RIGHT = -0.83, 0.83
 ZONE_BOTTOM, ZONE_TOP = 1.5, 3.5
@@ -498,227 +558,6 @@ def apply_session_filter_for_team(df, team, session_value):
     if not is_purdue_team(team) and session_value in {"bullpen", "batting_practice", "scrimmage"}:
         return df
     return df[df["SessionType"] == session_value]
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def get_csv_paths():
-    if not os.path.isdir(V3_PATH):
-        return []
-    pattern = os.path.join(V3_PATH, "**", "*.csv")
-    paths = sorted(glob.glob(pattern, recursive=True))
-    out = []
-    for p in paths:
-        try:
-            rel = os.path.relpath(p, V3_PATH)
-        except ValueError:
-            rel = os.path.basename(p)
-        out.append((rel, p))
-    return out
-
-def _data_dir_mtime():
-    if not os.path.isdir(V3_PATH):
-        return 0
-    try:
-        t = os.path.getmtime(V3_PATH)
-        for e in os.listdir(V3_PATH):
-            p = os.path.join(V3_PATH, e)
-            t = max(t, os.path.getmtime(p))
-        return t
-    except Exception:
-        return 0
-
-def get_csv_paths_with_dates():
-    cache_path = os.path.join(APP_DIR, ".csv_metadata_cache.json")
-    v3_mtime = _data_dir_mtime()
-
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, "r") as f:
-                data = json.load(f)
-            if data.get("v3_path") == V3_PATH and data.get("mtime") == v3_mtime:
-                rows = []
-                gmin_s, gmax_s = data.get("global_min"), data.get("global_max")
-                gmin = date.fromisoformat(gmin_s) if gmin_s else None
-                gmax = date.fromisoformat(gmax_s) if gmax_s else None
-                for rel, full, dmin_s, dmax_s in data.get("rows", []):
-                    dmin = date.fromisoformat(dmin_s) if dmin_s else None
-                    dmax = date.fromisoformat(dmax_s) if dmax_s else None
-                    if dmin and dmax:
-                        rows.append((rel, full, dmin, dmax))
-                return rows, gmin, gmax
-        except Exception:
-            pass
-
-    rows = []
-    gmin, gmax = None, None
-    for rel, full in get_csv_paths():
-        try:
-            df = pd.read_csv(full, usecols=["Date"])
-        except Exception:
-            continue
-        if "Date" not in df.columns or df["Date"].empty:
-            continue
-        dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
-        if dates.empty:
-            continue
-        dmin = dates.min().date()
-        dmax = dates.max().date()
-        rows.append((rel, full, dmin, dmax))
-        gmin = dmin if (gmin is None or dmin < gmin) else gmin
-        gmax = dmax if (gmax is None or dmax > gmax) else gmax
-
-    try:
-        cache_data = {
-            "v3_path": V3_PATH,
-            "mtime": v3_mtime,
-            "rows": [[rel, full, str(dmin), str(dmax)] for rel, full, dmin, dmax in rows],
-            "global_min": str(gmin) if gmin else None,
-            "global_max": str(gmax) if gmax else None,
-        }
-        with open(cache_path, "w") as f:
-            json.dump(cache_data, f)
-    except Exception:
-        pass
-
-    return rows, gmin, gmax
-
-def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
-    try:
-        df = pd.read_csv(full_path)
-    except Exception:
-        return None
-
-    cols = [c for c in COLUMNS_TO_KEEP if c in df.columns]
-    if not cols:
-        return None
-    df = df[cols].copy()
-
-    for c in [
-        "Pitcher", "Batter", PITCH_TYPE_COL, "PitchCall",
-        "PitcherTeam", "BatterTeam", "PitcherThrows", "BatterSide"
-    ]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
-
-    return df
-
-# ── Rapsodo CSV loader ────────────────────────────────────────────────────
-RAPSODO_PITCH_MAP = {
-    "Fastball": "Fastball",
-    "Riser": "Riseball",
-    "CurveBall": "Curveball",
-    "ChangeUp": "Changeup",
-    "Dropball": "Dropball",
-    "OffSpeedDrop": "Offspeed",
-    "OffSpeedRise": "Offspeed",
-    "TwoSeamFastball": "Fastball",
-    "DropCurve": "Drop-Curve",
-}
-
-RAPSODO_COL_MAP = {
-    "No": "PitchNo",
-    "Pitch Type": "TaggedPitchType",
-    "Velocity": "RelSpeed",
-    "Total Spin": "SpinRate",
-    "Strike Zone Side": "PlateLocSide",
-    "Strike Zone Height": "PlateLocHeight",
-    "HB (trajectory)": "HorzBreak",
-    "VB (trajectory)": "InducedVertBreak",
-    "Spin Direction": "SpinAxis",
-    "Release Height": "RelHeight",
-    "Release Side": "RelSide",
-    "Release Extension (ft)": "Extension",
-}
-
-# Map Rapsodo Player IDs → Trackman PitcherIds
-RAPSODO_TO_TRACKMAN_ID = {
-    "1065934": "100000001224",    # Emma Bailey
-    "1502155": "1000000001385",   # Bri Fontenot
-    "907287":  "1000000001389",   # Brooke Perez
-    "1120697": "100000001228",    # Julia Gossett
-    "1500934": "100000002641",    # Malone Moore
-}
-
-def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
-    try:
-        # Find header row (has "No" and "Date")
-        with open(full_path) as fh:
-            lines = fh.readlines()
-        header_row = None
-        player_name = ""
-        player_id = ""
-        for i, line in enumerate(lines):
-            if '"Player Name:"' in line or 'Player Name:' in line:
-                player_name = line.split(",", 1)[1].strip().strip('"')
-            if '"Player ID:"' in line or 'Player ID:' in line:
-                player_id = line.split(",", 1)[1].strip().strip('"')
-            if '"No"' in line and '"Date"' in line:
-                header_row = i
-                break
-        if header_row is None:
-            return None
-
-        df = pd.read_csv(full_path, skiprows=header_row)
-    except Exception:
-        return None
-
-    if df.empty:
-        return None
-
-    # Rename columns to Trackman names
-    df = df.rename(columns=RAPSODO_COL_MAP)
-
-    # Map pitch type names
-    if "TaggedPitchType" in df.columns:
-        df["TaggedPitchType"] = df["TaggedPitchType"].astype(str).str.strip().map(
-            lambda pt: RAPSODO_PITCH_MAP.get(pt, pt)
-        )
-
-    # Map Is Strike → PitchCall
-    if "Is Strike" in df.columns:
-        df["PitchCall"] = df["Is Strike"].astype(str).str.strip().map(
-            {"Y": "StrikeCalled", "N": "BallCalled"}
-        ).fillna("BallCalled")
-
-    # Ensure numeric columns are numeric
-    for c in ["RelSpeed", "SpinRate", "PlateLocSide", "PlateLocHeight",
-              "HorzBreak", "InducedVertBreak"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Rapsodo reports location in inches — convert to feet for Trackman compatibility
-    for c in ["PlateLocSide", "PlateLocHeight"]:
-        if c in df.columns:
-            df[c] = df[c] / 12.0
-
-    # Parse date
-    df["Date"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
-
-    # Add pitcher info — map to Trackman PitcherId for consistency
-    # Convert "Emma Bailey" → "Bailey, Emma" to match Trackman format
-    name_parts = player_name.strip().split()
-    if len(name_parts) >= 2:
-        pitcher_name = f"{name_parts[-1]}, {' '.join(name_parts[:-1])}"
-    else:
-        pitcher_name = player_name
-    df["Pitcher"] = pitcher_name
-    trackman_id = RAPSODO_TO_TRACKMAN_ID.get(str(player_id).strip(), str(player_id))
-    df["PitcherId"] = trackman_id
-    df["PitcherTeam"] = PURDUE_CODE
-    df["PitcherThrows"] = "Right"
-
-    # Mark as Rapsodo data
-    df["DataSource"] = "rapsodo"
-
-    # Keep only columns the app uses (plus extras)
-    keep = [c for c in COLUMNS_TO_KEEP if c in df.columns]
-    extra = ["DataSource", "RelHeight", "RelSide", "Extension"]
-    keep += [c for c in extra if c in df.columns and c not in keep]
-    df = df[keep].copy()
-
-    return df
 
 
 ACTIVE_ROSTER_2026 = {
@@ -1154,59 +993,65 @@ def get_pitcher_team_logo_text(team_code: str) -> str:
     return "O"
 
 # ---------------------------------------------------------------------------
-# Load csv metadata once
+# BigQuery: client, team dropdown (dim_team), global date bounds (fact_pitch)
 # ---------------------------------------------------------------------------
-csv_paths_with_dates, global_date_min, global_date_max = get_csv_paths_with_dates()
+BQ_PROJECT = "softball-492603"
+_BQ_FACT_TABLE = f"`{BQ_PROJECT}.softball_curated.fact_pitch`"
+_BQ_DIM_TEAM = f"`{BQ_PROJECT}.softball_curated.dim_team`"
 
-def build_master_df():
-    dfs = []
+try:
+    bq_client = bigquery.Client(
+        project=BQ_PROJECT,
+        client_options=ClientOptions(quota_project_id=BQ_PROJECT),
+    )
+except Exception:
+    bq_client = None
 
-    # Load Trackman data
-    for rel, full, dmin, dmax in csv_paths_with_dates:
-        df = load_and_clean_csv(full)
-        if df is None or df.empty or "Date" not in df.columns:
-            continue
 
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df[df["Date"].notna()].copy()
+def _fetch_dim_team_choices() -> dict:
+    if bq_client is None:
+        return {
+            "": "— Run: gcloud auth application-default login —",
+        }
+    try:
+        sql = f"SELECT team_code, display_name FROM {_BQ_DIM_TEAM} ORDER BY display_name"
+        df = bq_client.query(sql).to_dataframe()
         if df.empty:
-            continue
+            return {"": "— No teams —"}
+        return dict(
+            zip(df["team_code"].astype(str).str.strip(), df["display_name"].astype(str))
+        )
+    except Exception:
+        return {"": "— BigQuery error —"}
 
-        df["DateOnly"] = df["Date"].dt.date
-        df["DataSource"] = "trackman"
-        df = infer_session_type_for_purdue(df, filename=rel)
 
-        dfs.append(df)
+def _fetch_global_date_bounds():
+    if bq_client is None:
+        return None, None
+    try:
+        sql = f"SELECT MIN(date_only) AS dmin, MAX(date_only) AS dmax FROM {_BQ_FACT_TABLE}"
+        df = bq_client.query(sql).to_dataframe()
+        row = df.iloc[0]
+        dmin, dmax = row["dmin"], row["dmax"]
+        if pd.isna(dmin) or pd.isna(dmax):
+            return None, None
+        if hasattr(dmin, "date"):
+            dmin = dmin.date()
+        if hasattr(dmax, "date"):
+            dmax = dmax.date()
+        return dmin, dmax
+    except Exception:
+        return None, None
 
-    # Load Rapsodo data
-    rapsodo_dir = os.path.join(APP_DIR, "data", "rapsodo")
-    if os.path.isdir(rapsodo_dir):
-        for fname in glob.glob(os.path.join(rapsodo_dir, "*.csv")):
-            df = load_rapsodo_csv(fname)
-            if df is None or df.empty or "Date" not in df.columns:
-                continue
-            df = df[df["Date"].notna()].copy()
-            if df.empty:
-                continue
-            df["DateOnly"] = df["Date"].dt.date
-            df["SessionType"] = "bullpen"
-            df["SessionTypeReason"] = "Rapsodo bullpen data"
-            dfs.append(df)
 
-    if not dfs:
-        return pd.DataFrame()
+DIM_TEAM_CHOICES = _fetch_dim_team_choices()
+DIM_TEAM_DEFAULT = (
+    PURDUE_CODE
+    if PURDUE_CODE in DIM_TEAM_CHOICES
+    else (next(iter(DIM_TEAM_CHOICES)) if DIM_TEAM_CHOICES else "")
+)
 
-    master = pd.concat(dfs, ignore_index=True)
-
-    # Exclude Trackman test/demo data
-    EXCLUDE_TEAMS = {"TRA_TRA_SB", "TRA_TRA1_SB"}
-    for col in ["PitcherTeam", "BatterTeam"]:
-        if col in master.columns:
-            master = master[~master[col].astype(str).str.strip().isin(EXCLUDE_TEAMS)]
-
-    return master
-
-MASTER_DF = build_master_df()
+global_date_min, global_date_max = _fetch_global_date_bounds()
 
 DEFAULT_SEASON = "spring_2026"
 
@@ -1956,16 +1801,11 @@ app_ui = ui.page_fluid(
                 selected="trackman",
             ),
 
-            ui.input_selectize(
+            ui.input_select(
                 "team",
                 "Team Name",
-                choices={},
-                selected=PURDUE_CODE,
-                options={
-                    "placeholder": "Search team name...",
-                    "maxOptions": 300,
-                    "openOnFocus": True,
-                },
+                choices=DIM_TEAM_CHOICES,
+                selected=DIM_TEAM_DEFAULT,
             ),
             ui.input_select(
                 "session_type",
@@ -2072,6 +1912,33 @@ def server(input, output, session):
     updating_dates_from_season = reactive.Value(False)
 
     @reactive.calc
+    def bq_fact_pitch_df():
+        team = input.team()
+        start = input.date_start()
+        end = input.date_end()
+        if bq_client is None or not team or start is None or end is None or start > end:
+            return pd.DataFrame()
+        try:
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("team", "STRING", str(team)),
+                    bigquery.ScalarQueryParameter("start", "DATE", start),
+                    bigquery.ScalarQueryParameter("end", "DATE", end),
+                ]
+            )
+            sql = f"""
+            SELECT *
+            FROM {_BQ_FACT_TABLE}
+            WHERE (PitcherTeam = @team OR BatterTeam = @team)
+              AND date_only BETWEEN @start AND @end
+            """
+            job = bq_client.query(sql, job_config=job_config)
+            df = job.to_dataframe()
+        except Exception:
+            return pd.DataFrame()
+        return normalize_fact_pitch_df(df)
+
+    @reactive.calc
     def date_range_invalid():
         start, end = input.date_start(), input.date_end()
         return start is not None and end is not None and start > end
@@ -2081,15 +1948,13 @@ def server(input, output, session):
         start = input.date_start()
         end = input.date_end()
 
-        if start is None or end is None or not csv_paths_with_dates:
+        if start is None or end is None:
             return False
         if start > end:
             return False
-
-        for _, _, dmin, dmax in csv_paths_with_dates:
-            if dmin <= end and dmax >= start:
-                return True
-        return False
+        if global_date_min is None or global_date_max is None:
+            return False
+        return start <= global_date_max and end >= global_date_min
 
     @reactive.effect
     def _update_dates_from_season():
@@ -2217,13 +2082,16 @@ def server(input, output, session):
             return None
         if start > end:
             return None
-        if MASTER_DF.empty:
+        master = bq_fact_pitch_df()
+        if master.empty:
             return None
 
-        df = MASTER_DF[
-            (MASTER_DF["DateOnly"] >= start) &
-            (MASTER_DF["DateOnly"] <= end)
-        ]
+        df = master
+        if "DateOnly" in df.columns:
+            df = df[
+                (df["DateOnly"] >= start) &
+                (df["DateOnly"] <= end)
+            ]
 
         # Filter by data source
         src = input.data_source()
@@ -2266,30 +2134,6 @@ def server(input, output, session):
                 },
                 session=session,
             )
-
-    @reactive.effect
-    def _update_team_choices():
-        df = current_df()
-        if df is None or df.empty:
-            ui.update_selectize("team", choices={}, session=session)
-            return
-
-        teams = set()
-        for col in ["PitcherTeam", "BatterTeam"]:
-            if col in df.columns:
-                vals = df[col].dropna().astype(str).str.strip().tolist()
-                teams.update([v for v in vals if v])
-
-        teams = sorted(list(teams))
-        choices = {t: TEAM_NAME_MAP.get(t, t) for t in teams}
-        choices = dict(sorted(choices.items(), key=lambda x: x[1]))
-        default_team = PURDUE_CODE if PURDUE_CODE in teams else (teams[0] if teams else None)
-        ui.update_selectize(
-            "team",
-            choices=choices,
-            selected=default_team,
-            session=session,
-        )
 
     @reactive.effect
     def _force_session_all_for_non_purdue():
