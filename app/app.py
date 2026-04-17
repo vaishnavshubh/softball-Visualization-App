@@ -15,6 +15,7 @@ import glob
 import json
 import math
 import os
+import sys
 from datetime import date
 
 import matplotlib
@@ -28,26 +29,14 @@ import numpy as np
 import pandas as pd
 from shiny import App, render, ui, reactive
 
-# --- ML (Prediction tab): logistic regression on pitcher features ---
-try:
-    from sklearn.compose import ColumnTransformer
-    from sklearn.impute import SimpleImputer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import OneHotEncoder, StandardScaler
-except ImportError:
-    ColumnTransformer = None
-    SimpleImputer = None
-    LogisticRegression = None
-    Pipeline = None
-    OneHotEncoder = None
-    StandardScaler = None
-
-
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+import prediction_pipeline  # noqa: E402  # league-wide ML for Prediction tab (after APP_DIR on path)
+
 V3_PATH = os.path.join(APP_DIR, "data", "v3")
 STATIC_DIR = os.path.join(APP_DIR, "static")
 
@@ -1325,17 +1314,6 @@ PREDICTION_MIN_STRIKE_N = 12
 PREDICTION_MIN_SWINGS_PUTAWAY = 8
 PREDICTION_MIN_CONTACT_CAUTION = 5
 
-ML_NUMERIC_FEATURES = [
-    "PlateLocSide", "PlateLocHeight", "Balls", "Strikes",
-    "RelSpeed", "SpinRate", "InducedVertBreak", "HorzBreak",
-]
-ML_CATEGORICAL_FEATURES = [PITCH_TYPE_COL, "BatterSide", "PitcherThrows"]
-ML_MIN_TRAIN_ROWS = 30
-ML_MIN_PER_CLASS = 1
-ML_HARD_CONTACT_EV = 80.0
-ML_LOW_SAMPLE_ML_WARN = "Low sample — ML estimate may be unstable"
-
-
 def _prediction_sample_warning(n: int) -> str:
     if n < 6:   return "Very low sample — interpret cautiously"
     if n < 12:  return "Low sample"
@@ -1469,212 +1447,6 @@ def format_prediction_table_display(pred: pd.DataFrame, summary: dict) -> pd.Dat
     })
 
 
-def ensure_binary(y: pd.Series) -> pd.Series:
-    if y is None or len(y) == 0: return y
-    out = pd.Series(y, index=y.index, dtype=int).copy()
-    if out.nunique() >= 2: return out
-    out.iloc[0] = 1 if int(out.iloc[0]) == 0 else 0
-    return out
-
-
-def _ml_target_ok(y: pd.Series) -> bool:
-    if y is None or len(y) < ML_MIN_TRAIN_ROWS: return False
-    if int(y.nunique()) < 2: return False
-    pos = int(y.sum())
-    neg = int(len(y) - pos)
-    return pos >= ML_MIN_PER_CLASS and neg >= ML_MIN_PER_CLASS
-
-
-def prepare_pitcher_ml_training_frame(df):
-    if df is None or df.empty or "PitchCall" not in df.columns or PITCH_TYPE_COL not in df.columns:
-        return None, None, None, None, [], []
-    d = df[is_valid_pitch_type(df[PITCH_TYPE_COL])].copy()
-    if len(d) < ML_MIN_TRAIN_ROWS:
-        return None, None, None, None, [], []
-
-    pc = d["PitchCall"].astype(str).str.strip()
-    strike_events = {"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-    y_strike = pc.isin(strike_events).astype(int)
-    y_whiff = pc.eq("StrikeSwinging").astype(int)
-    in_play = pc.eq("InPlay")
-    ev = pd.to_numeric(d["ExitSpeed"], errors="coerce") if "ExitSpeed" in d.columns else pd.Series(np.nan, index=d.index)
-    y_hard = (in_play & (ev >= ML_HARD_CONTACT_EV)).astype(int)
-
-    num_cols = [c for c in ML_NUMERIC_FEATURES if c in d.columns]
-    cat_cols = [c for c in ML_CATEGORICAL_FEATURES if c in d.columns]
-    if not num_cols and not cat_cols:
-        return None, None, None, None, [], []
-
-    X = d[num_cols + cat_cols].copy()
-    for c in num_cols: X[c] = pd.to_numeric(X[c], errors="coerce")
-    for c in cat_cols: X[c] = X[c].astype(str).str.strip().replace({"nan": np.nan})
-    return X, y_strike, y_whiff, y_hard, num_cols, cat_cols
-
-
-def _fit_logistic_pipeline(X, y):
-    if ColumnTransformer is None or Pipeline is None: return None
-    num_cols = [c for c in ML_NUMERIC_FEATURES if c in X.columns]
-    cat_cols = [c for c in ML_CATEGORICAL_FEATURES if c in X.columns]
-    transformers = []
-    if num_cols:
-        transformers.append(("num", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), num_cols))
-    if cat_cols:
-        transformers.append(("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False, max_categories=25))]), cat_cols))
-    if not transformers: return None
-    pipe = Pipeline([("prep", ColumnTransformer(transformers, remainder="drop")), ("lr", LogisticRegression(max_iter=4000, class_weight="balanced", random_state=42, solver="lbfgs"))])
-    pipe.fit(X, y)
-    return pipe
-
-
-def build_typical_pitch_feature_rows(df, num_cols, cat_cols):
-    if df is None or df.empty or PITCH_TYPE_COL not in df.columns: return pd.DataFrame()
-    d = df[is_valid_pitch_type(df[PITCH_TYPE_COL])].copy()
-    if d.empty: return pd.DataFrame()
-    mode_batter = str(d["BatterSide"].mode().iloc[0]).strip() if "BatterSide" in d.columns and not d["BatterSide"].mode().empty else "Right"
-    mode_throw = str(d["PitcherThrows"].mode().iloc[0]).strip() if "PitcherThrows" in d.columns and not d["PitcherThrows"].mode().empty else "Right"
-    rows = []
-    for ptype, g in d.groupby(PITCH_TYPE_COL, dropna=False):
-        row = {}
-        for c in num_cols: row[c] = pd.to_numeric(g[c], errors="coerce").mean()
-        if PITCH_TYPE_COL in cat_cols: row[PITCH_TYPE_COL] = ptype
-        if "BatterSide" in cat_cols: row["BatterSide"] = mode_batter
-        if "PitcherThrows" in cat_cols: row["PitcherThrows"] = mode_throw
-        rows.append(row)
-    out = pd.DataFrame(rows)
-    cols = [c for c in num_cols + cat_cols if c in out.columns]
-    return out[cols] if cols else pd.DataFrame()
-
-
-def compute_ml_prediction_bundle(df, train_pool=None):
-    empty = {"use_ml": False, "message": "", "df": pd.DataFrame(), "summary": {"best_strike": None, "best_putaway": None, "caution": None}, "training_note": ""}
-    if ColumnTransformer is None:
-        empty["message"] = "scikit-learn not available; install scikit-learn for ML predictions."
-        return empty
-    desc = build_prediction_by_pitch_type(df)
-    if desc is None or desc.empty:
-        empty["message"] = "No descriptive pitch summary available."
-        return empty
-
-    pitcher_n = len(df[is_valid_pitch_type(df[PITCH_TYPE_COL])]) if df is not None and not df.empty and PITCH_TYPE_COL in df.columns else 0
-    train_df = df
-    training_note = ""
-    if pitcher_n < ML_MIN_TRAIN_ROWS and train_pool is not None and not train_pool.empty:
-        train_df = train_pool
-        training_note = "Models trained on broader sample (pitcher's own data below ML minimum)."
-
-    X, y_strike, y_whiff, y_hard, num_cols, cat_cols = prepare_pitcher_ml_training_frame(train_df)
-    if X is None:
-        empty["message"] = f"Not enough data for ML prediction (need ≥{ML_MIN_TRAIN_ROWS} pitches)."
-        return empty
-
-    y_strike = ensure_binary(y_strike)
-    y_whiff = ensure_binary(y_whiff)
-    y_hard = ensure_binary(y_hard)
-    if not (_ml_target_ok(y_strike) and _ml_target_ok(y_whiff) and _ml_target_ok(y_hard)):
-        empty["message"] = "Training set too small after filtering."
-        return empty
-
-    try:
-        m_strike = _fit_logistic_pipeline(X, y_strike)
-        m_whiff = _fit_logistic_pipeline(X, y_whiff)
-        m_hard = _fit_logistic_pipeline(X, y_hard)
-    except Exception:
-        empty["message"] = "ML model fitting failed."
-        return empty
-    if m_strike is None or m_whiff is None or m_hard is None:
-        empty["message"] = "Could not build ML pipelines."
-        return empty
-
-    X_typ = build_typical_pitch_feature_rows(df, num_cols, cat_cols)
-    if X_typ is None or X_typ.empty:
-        empty["message"] = "Could not build per-pitch-type feature rows."
-        return empty
-
-    try:
-        p_strike = m_strike.predict_proba(X_typ)[:, 1]
-        p_whiff = m_whiff.predict_proba(X_typ)[:, 1]
-        p_hard = m_hard.predict_proba(X_typ)[:, 1]
-    except Exception:
-        empty["message"] = "ML prediction failed."
-        return empty
-
-    counts = desc.set_index(PITCH_TYPE_COL)["pitch_count"].to_dict()
-    warns = desc.set_index(PITCH_TYPE_COL)["sample_warning"].to_dict()
-    ml_rows = []
-    for i, ptype in enumerate(X_typ[PITCH_TYPE_COL].values):
-        n = int(counts.get(ptype, 0))
-        warn = str(warns.get(ptype, "")).strip()
-        parts = [w for w in [warn] if w]
-        if n < 20: parts.append(ML_LOW_SAMPLE_ML_WARN)
-        ml_rows.append({
-            PITCH_TYPE_COL: ptype,
-            "predicted_strike_prob": float(p_strike[i]),
-            "predicted_whiff_prob": float(p_whiff[i]),
-            "predicted_hard_contact_prob": float(p_hard[i]),
-            "pitch_count": n,
-            "sample_warning": " · ".join(parts) if parts else "",
-        })
-
-    ml_df = pd.DataFrame(ml_rows)
-    summ = select_ml_prediction_summary(ml_df)
-    return {"use_ml": True, "message": "", "df": ml_df, "summary": summ, "training_note": training_note}
-
-
-def select_ml_prediction_summary(pred):
-    out = {"best_strike": None, "best_putaway": None, "caution": None}
-    if pred is None or pred.empty: return out
-    pcol = PITCH_TYPE_COL
-    p = pred.copy()
-
-    for key, col, min_n, blurb in [
-        ("best_strike", "predicted_strike_prob", PREDICTION_MIN_STRIKE_N, "Highest model-estimated strike probability."),
-        ("best_putaway", "predicted_whiff_prob", PREDICTION_MIN_SWINGS_PUTAWAY, "Highest model-estimated whiff probability — strong in two-strike counts."),
-        ("caution", "predicted_hard_contact_prob", PREDICTION_MIN_CONTACT_CAUTION, f"Highest hard-contact risk (EV ≥ {int(ML_HARD_CONTACT_EV)} mph)."),
-    ]:
-        tier = p[p["pitch_count"] >= min_n]
-        if tier.empty: tier = p[p["pitch_count"] >= 3]
-        if tier.empty: tier = p
-        if not tier.empty:
-            best = tier.loc[tier[col].idxmax()]
-            out[key] = {
-                "pitch": str(best[pcol]),
-                "pred_strike": float(best["predicted_strike_prob"]),
-                "pred_whiff": float(best["predicted_whiff_prob"]),
-                "pred_hard": float(best["predicted_hard_contact_prob"]),
-                "pitch_count": int(best["pitch_count"]),
-                "sample_warning": str(best["sample_warning"]),
-                "coach_blurb": blurb,
-                "is_ml": True,
-            }
-    return out
-
-
-def format_ml_prediction_table_display(pred, summary):
-    if pred is None or pred.empty:
-        return pd.DataFrame(columns=["Pitch", "Predicted Strike %", "Predicted Whiff %", "Predicted Hard Contact Risk", "Sample", "Recommendation"])
-    pcol = PITCH_TYPE_COL
-    bs = (summary.get("best_strike") or {}).get("pitch")
-    bp = (summary.get("best_putaway") or {}).get("pitch")
-    ca = (summary.get("caution") or {}).get("pitch")
-    recs = []
-    for _, row in pred.iterrows():
-        name = str(row[pcol])
-        tags = []
-        if bs and name == bs: tags.append("Best strike")
-        if bp and name == bp: tags.append("Best put-away")
-        if ca and name == ca: tags.append("Caution")
-        recs.append("; ".join(tags) if tags else "—")
-    return pd.DataFrame({
-        "Pitch": pred[pcol].astype(str),
-        "Predicted Strike %": pred["predicted_strike_prob"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
-        "Predicted Whiff %": pred["predicted_whiff_prob"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
-        "Predicted Hard Contact Risk": pred["predicted_hard_contact_prob"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
-        "Sample": pred["pitch_count"].astype(int),
-        "Sample Note": pred["sample_warning"].map(lambda s: s if str(s).strip() else "—"),
-        "Recommendation": recs,
-    })
-
-
 def get_pitcher_team_logo_text(team_code: str) -> str:
     if team_code == PURDUE_CODE:
         return "P"
@@ -1783,6 +1555,12 @@ def get_initial_date_range(default_season):
     return start, end
 
 _date_start_value, _date_end_value = get_initial_date_range(DEFAULT_SEASON)
+INITIAL_SEASON_SELECTION = DEFAULT_SEASON
+if _date_start_value is None or _date_end_value is None:
+    # If the default season has no overlap with loaded CSV dates,
+    # fall back to "all" so date inputs remain interactive.
+    INITIAL_SEASON_SELECTION = "all"
+    _date_start_value, _date_end_value = get_initial_date_range("all")
 
 
 # ---------------------------------------------------------------------------
@@ -2186,6 +1964,12 @@ app_ui = ui.page_fluid(
             min-width: 95px;
         }
 
+        /* Prediction tab table: slightly larger readability */
+        .prediction-table-wrap th,
+        .prediction-table-wrap td {
+            font-size: 13px;
+        }
+
         .table-title {
             font-size: 16px;
             font-weight: 900;
@@ -2537,7 +2321,7 @@ app_ui = ui.page_fluid(
                         "custom": "Custom Date Range",
                     },
                     
-                    selected=DEFAULT_SEASON,
+                    selected=INITIAL_SEASON_SELECTION,
                 ),
             ),
 
@@ -2844,16 +2628,18 @@ def server(input, output, session):
             return
         if start is None or end is None:
             return
+        if start > end:
+            return
 
         ui.update_date(
             "date_start",
             min=global_date_min,
-            max=end,
+            max=min(end, global_date_max),
             session=session,
         )
         ui.update_date(
             "date_end",
-            min=start,
+            min=max(start, global_date_min),
             max=global_date_max,
             session=session,
         )
@@ -3462,6 +3248,16 @@ def server(input, output, session):
     # -----------------------------------------------------------------------
     # Prediction tab reactives
     # -----------------------------------------------------------------------
+    @reactive.effect
+    @reactive.event(input.retrain_prediction_models)
+    def _retrain_prediction_models():
+        prediction_pipeline.clear_prediction_cache(remove_disk=True)
+        ui.notification_show(
+            "Prediction models cache cleared. Models will retrain on next prediction refresh.",
+            type="message",
+            duration=4,
+        )
+
     @reactive.calc
     def prediction_df():
         data = pitcher_data()
@@ -3477,13 +3273,27 @@ def server(input, output, session):
     def ml_prediction_state():
         empty_st = {"use_ml": False, "message": "", "df": pd.DataFrame(),
                     "summary": {"best_strike": None, "best_putaway": None, "caution": None},
-                    "training_note": ""}
+                    "training_note": "", "metrics_note": "", "warning_note": ""}
         if input.player_type() != "pitcher":
             return empty_st
         data = pitcher_data()
         if data is None or data.empty:
             return empty_st
-        return compute_ml_prediction_bundle(data, train_pool=current_df())
+        league = SOURCE_SLICES.get("trackman")
+        if league is None or league.empty:
+            if MASTER_DF is not None and not MASTER_DF.empty and "DataSource" in MASTER_DF.columns:
+                league = MASTER_DF[MASTER_DF["DataSource"].astype(str) == "trackman"].reset_index(drop=True)
+            else:
+                league = MASTER_DF
+        desc = build_prediction_by_pitch_type(data)
+        return prediction_pipeline.compute_ml_prediction_bundle(
+            pitcher_df=data,
+            league_df=league,
+            descriptive_by_ptype=desc,
+            batter_side_filter=input.batter_side(),
+            pitch_col=PITCH_TYPE_COL,
+            zone_bounds=(ZONE_LEFT, ZONE_RIGHT, ZONE_BOTTOM, ZONE_TOP),
+        )
 
     @reactive.calc
     def ml_prediction_df():
@@ -3498,18 +3308,18 @@ def server(input, output, session):
     def prediction_content():
         if input.player_type() != "pitcher":
             return ui.div("Prediction is currently available for pitcher view only.",
-                          style="padding:20px;color:#666;text-align:center;font-size:15px;")
+                          style="padding:20px;color:#666;text-align:center;font-size:16px;")
         if input.data_source() not in ("trackman",):
             return ui.div("⚠️  Prediction is available for Trackman data only. Switch Data Source to Trackman to view predictions.", style=(
                 "padding:14px 18px; border-radius:8px; background:#fef9ec;"
                 "border:1.5px solid #DDB945; color:#6b4e00;"
-                "font-size:15px; font-weight:700; margin-top:12px;"
+                "font-size:16px; font-weight:700; margin-top:12px;"
             ))
 
         pred = prediction_df()
         if pred is None or pred.empty:
             return ui.div("No prediction data available for the selected filters.",
-                          style="padding:20px;color:#666;text-align:center;")
+                          style="padding:20px;color:#666;text-align:center;font-size:16px;")
 
         st = ml_prediction_state()
         use_ml = bool(st.get("use_ml"))
@@ -3517,66 +3327,135 @@ def server(input, output, session):
         fallback_note = (st.get("message") or "").strip()
 
         def _pct(x):
-            if x is None or (isinstance(x, float) and pd.isna(x)): return "—"
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
             return f"{float(x) * 100:.1f}%"
 
-        def _card(title, accent, key):
+        def _short_explainer(key):
+            if key == "best_strike":
+                return "Consistently lands in the zone."
+            if key == "best_putaway":
+                return "Generates swings and misses late in counts."
+            return "Gets hit hard more often when left over the plate."
+
+        def _takeaway(key):
+            if key == "best_strike":
+                return "Most reliable pitch to get ahead in the count"
+            if key == "best_putaway":
+                return "Best swing-and-miss pitch in two-strike situations"
+            return "Most likely to get hit hard if mislocated"
+
+        def _when_to_use(key):
+            if key == "best_strike":
+                return ["Early counts (0-0, 1-0)", "When you need a strike"]
+            if key == "best_putaway":
+                return ["Two-strike counts", "After showing fastball"]
+            return ["Use carefully in hitter's counts", "Avoid middle-middle location"]
+
+        def _card_theme(key):
+            if key == "best_strike":
+                return ("#0f8a4a", "#f4fff8")
+            if key == "best_putaway":
+                return ("#b38b00", "#fffdf4")
+            return ("#b91c1c", "#fff7f7")
+
+        def _card(title, key):
             c = summ.get(key)
+            border_color, bg_color = _card_theme(key)
             if not c or not c.get("pitch") or c.get("pitch") == "—":
-                body = ui.div(c.get("coach_blurb", "Insufficient data.") if c else "Not enough data.",
-                              style="font-size:14px;color:#555;line-height:1.45;")
+                body = ui.div("Not enough data for this recommendation.", style="font-size:15px;color:#555;")
             elif c.get("is_ml"):
                 warn = c.get("sample_warning") or ""
-                warn_ui = ui.div(ui.tags.span("Sample note: ", style="font-weight:800;"), warn,
-                                 style="font-size:13px;color:#854F0B;margin-top:8px;") if warn else None
+                warn_ui = ui.div(ui.tags.span("Sample note: ", style="font-weight:800;"), warn, style="font-size:13px;color:#854F0B;margin-top:8px;") if warn else None
+                bullets = _when_to_use(key)
                 body = ui.div(
-                    ui.div(str(c["pitch"]), style="font-size:20px;font-weight:900;margin-bottom:10px;color:#111;"),
-                    ui.div(f"P(strike) {_pct(c.get('pred_strike'))} · P(whiff) {_pct(c.get('pred_whiff'))} · P(hard contact) {_pct(c.get('pred_hard'))}",
-                           style="font-size:14px;margin-bottom:8px;"),
-                    ui.div(f"Sample: {int(c['pitch_count'])} pitches", style="font-size:13px;color:#444;margin-bottom:8px;"),
+                    ui.div(str(c["pitch"]), style="font-size:32px;font-weight:900;margin-bottom:6px;color:#111;"),
+                    ui.div(_takeaway(key), style="font-size:15px;font-weight:900;color:#111;margin-bottom:8px;"),
+                    ui.div(
+                        f"Strike {_pct(c.get('pred_strike'))} | Whiff {_pct(c.get('pred_whiff'))} | Hard Contact Risk {_pct(c.get('pred_hard'))}",
+                        style="font-size:15px;color:#222;margin-bottom:8px;",
+                    ),
+                    ui.div(_short_explainer(key), style="font-size:14px;color:#222;line-height:1.35;"),
+                    ui.div("When to use:", style="font-size:13px;font-weight:900;color:#111;margin-top:10px;"),
+                    ui.tags.ul(
+                        ui.tags.li(bullets[0], style="font-size:13px;color:#222;"),
+                        ui.tags.li(bullets[1], style="font-size:13px;color:#222;"),
+                        style="margin:4px 0 0 18px;padding:0;",
+                    ),
                     warn_ui,
-                    ui.div(c.get("coach_blurb", ""), style="font-size:13px;color:#333;line-height:1.5;margin-top:10px;border-top:1px solid #e0e0e0;padding-top:10px;"),
                 )
             else:
-                warn = c.get("sample_warning") or ""
-                warn_ui = ui.div(ui.tags.span("Sample note: ", style="font-weight:800;"), warn,
-                                 style="font-size:13px;color:#854F0B;margin-top:8px;") if warn else None
-                body = ui.div(
-                    ui.div(str(c["pitch"]), style="font-size:20px;font-weight:900;margin-bottom:10px;color:#111;"),
-                    ui.div(f"Strike {_pct(c.get('strike_pct'))} · Whiff {_pct(c.get('whiff_pct'))} · Contact {_pct(c.get('contact_pct'))}",
-                           style="font-size:14px;margin-bottom:4px;"),
-                    ui.div(f"Hard-contact risk: {_pct(c.get('hard_contact_risk'))} ({int(c.get('hard_contact_count', 0))} hard / {int(c.get('contact_count', 0))} contact)",
-                           style="font-size:14px;margin-bottom:8px;"),
-                    ui.div(f"Sample: {int(c['pitch_count'])} pitches · {int(c.get('swing_count', 0))} swings",
-                           style="font-size:13px;color:#444;margin-bottom:8px;"),
-                    warn_ui,
-                    ui.div(c.get("coach_blurb", ""), style="font-size:13px;color:#333;line-height:1.5;margin-top:10px;border-top:1px solid #e0e0e0;padding-top:10px;"),
-                )
+                body = ui.div("Historical summary only (ML unavailable).", style="font-size:14px;color:#666;")
 
             return ui.div(
-                ui.div(title, style=f"font-size:13px;font-weight:900;letter-spacing:0.04em;color:{accent};margin-bottom:8px;"),
+                ui.div(title, style=f"font-size:14px;font-weight:900;letter-spacing:0.04em;color:{border_color};margin-bottom:8px;"),
                 body,
-                style=f"flex:1;min-width:220px;padding:16px;background:#fafafa;border:1px solid #d6d6d6;border-radius:10px;border-top:4px solid {accent};",
+                style=f"flex:1;min-width:220px;padding:16px;background:{bg_color};border:1px solid #d6d6d6;border-radius:10px;border-top:5px solid {border_color};",
             )
 
-        intro = ui.div(
-            ("ML module: logistic regression models for strike, whiff, and hard contact. Probabilities use typical pitch profiles — estimates only."
-             if use_ml else "Descriptive summary from current filters (historical rates)."),
-            style="font-size:13px;color:#555;margin-bottom:8px;max-width:900px;",
+        strike_pitch = ((summ.get("best_strike") or {}).get("pitch") or "this pitch")
+        putaway_pitch = ((summ.get("best_putaway") or {}).get("pitch") or "this pitch")
+        caution_pitch = ((summ.get("caution") or {}).get("pitch") or "this pitch")
+        strategy_ui = ui.div(
+            ui.div("Pitching Strategy Summary:", style="font-size:15px;font-weight:900;color:#111;margin-bottom:4px;"),
+            ui.div(
+                f"This pitcher leans on the {str(strike_pitch).lower()} for control, "
+                f"uses the {str(putaway_pitch).lower()} as the put-away pitch, "
+                f"and should be cautious with the {str(caution_pitch).lower()} when behind in the count.",
+                style="font-size:15px;color:#222;line-height:1.4;",
+            ),
+            style="padding:10px 12px;border:1px solid #d9d9d9;border-left:5px solid #111;border-radius:8px;background:#fcfcfc;margin-bottom:10px;",
         )
+
         train_note = (st.get("training_note") or "").strip()
-        train_ui = ui.div(train_note, style="font-size:12px;color:#444;font-style:italic;margin-bottom:10px;") if (use_ml and train_note) else None
-        fb_ui = ui.div(fallback_note, style="font-size:13px;color:#854F0B;font-weight:700;margin-bottom:12px;") if (not use_ml and fallback_note) else None
+        train_ui = ui.div(train_note, style="font-size:12px;color:#666;font-style:italic;margin-bottom:6px;") if (use_ml and train_note) else None
+        met_note = (st.get("metrics_note") or "").strip()
+        met_ui = ui.div(f"Validation: {met_note}", style="font-size:11px;color:#777;margin-bottom:6px;") if (use_ml and met_note) else None
+        warn_note = (st.get("warning_note") or "").strip()
+        warn_ui = ui.div(
+            f"Estimate note: {warn_note}",
+            style="font-size:12px;color:#854F0B;font-weight:700;margin-bottom:8px;",
+        ) if (use_ml and warn_note) else None
+        fb_ui = ui.div(fallback_note, style="font-size:14px;color:#854F0B;font-weight:700;margin-bottom:12px;") if (not use_ml and fallback_note) else None
+
+        advanced_ui = ui.div()
+        if use_ml:
+            advanced_ui = ui.tags.details(
+                ui.tags.summary("Advanced Metrics"),
+                ui.div(
+                    ui.tags.p(
+                        "Model detail view: shows how each pitch profile shifts expected outcomes versus league-average baseline.",
+                        style="font-size:13px;color:#666;margin:8px 0 4px 0;",
+                    ),
+                    ui.tags.p(
+                        ui.tags.span("Green/right", style="color:#166534;font-weight:800;"),
+                        " = increases the outcome | ",
+                        ui.tags.span("Red/left", style="color:#991b1b;font-weight:800;"),
+                        " = decreases the outcome | Values are directional effects, not raw probabilities.",
+                        style="font-size:12px;color:#555;margin:0 0 8px 0;",
+                    ),
+                    ui.output_ui("prediction_advanced_impacts_ui"),
+                    ui.output_ui("prediction_model_drivers_ui"),
+                    ui.output_table("prediction_advanced_table"),
+                    ui.tags.p(
+                        "Use these values to compare relative strengths across this pitcher's options. Treat small gaps as equivalent tiers; prioritize cards and game context for final pitch calling.",
+                        style="font-size:12px;color:#555;margin:8px 0 4px 0;",
+                    ),
+                ),
+                style="margin-top:12px;padding:8px;border:1px solid #ddd;border-radius:8px;background:#fafafa;",
+            )
 
         return ui.div(
-            intro, train_ui, fb_ui,
+            strategy_ui, train_ui, met_ui, warn_ui, fb_ui,
             ui.div(
-                _card("Best strike pitch", "#185FA5", "best_strike"),
-                _card("Best put-away pitch", "#0F6E56", "best_putaway"),
-                _card("Caution pitch", "#b45309", "caution"),
+                _card("Best strike / command pitch", "best_strike"),
+                _card("Best put-away option", "best_putaway"),
+                _card("Highest damage-risk pitch", "caution"),
                 style="display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;",
             ),
+            advanced_ui,
             style="padding:4px 0 18px 0;",
+            class_="prediction-tab-wrap",
         )
 
     @output
@@ -3586,9 +3465,9 @@ def server(input, output, session):
             return ui.div()
         return ui.div(
             ui.div("Summary by pitch type", style=(
-                "font-size:16px;font-weight:900;margin:18px 0 10px 0;text-align:center;"
+                "font-size:17px;font-weight:900;margin:18px 0 10px 0;text-align:center;"
             )),
-            ui.div(ui.output_table("prediction_table"), class_="usage-table-wrap"),
+            ui.div(ui.output_table("prediction_table"), class_="usage-table-wrap prediction-table-wrap"),
         )
 
     @output
@@ -3598,8 +3477,230 @@ def server(input, output, session):
             return pd.DataFrame()
         st = ml_prediction_state()
         if st.get("use_ml"):
-            return format_ml_prediction_table_display(st["df"], st["summary"])
+            return prediction_pipeline.format_ml_prediction_table_display(st["df"], st["summary"])
         return format_prediction_table_display(prediction_df(), prediction_summary())
+
+    @output
+    @render.ui
+    def prediction_advanced_impacts_ui():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return ui.div()
+        st = ml_prediction_state()
+        if not st.get("use_ml") or st.get("df") is None or st.get("df").empty:
+            return ui.div()
+
+        adf = st["df"].copy()
+        req_cols = [
+            PITCH_TYPE_COL,
+            "attack_score",
+            "putaway_score",
+            "danger_score",
+            "composite_score",
+            "stability_label",
+        ]
+        req_cols = [c for c in req_cols if c in adf.columns]
+        if len(req_cols) < 5:
+            return ui.div()
+
+        adf = adf[req_cols].copy()
+        adf = adf.sort_values("composite_score", ascending=False, kind="mergesort")
+
+        max_abs = pd.to_numeric(
+            adf[["attack_score", "putaway_score", "danger_score"]].stack(),
+            errors="coerce",
+        ).abs().max()
+        if pd.isna(max_abs) or float(max_abs) <= 0:
+            max_abs = 1.0
+
+        def _fmt_signed(v):
+            try:
+                fv = float(v)
+            except Exception:
+                return "—"
+            return f"{fv:+.3f}"
+
+        low_stability_mask = adf.get("stability_label", pd.Series([""] * len(adf))).astype(str).str.lower().isin(
+            ["low stability", "very low stability"]
+        )
+        has_low_stability = bool(low_stability_mask.any())
+
+        def _chip_text(metric_col, metric_label, high_is_risk=False):
+            vals = pd.to_numeric(adf[metric_col], errors="coerce")
+            if vals.notna().sum() == 0:
+                return f"No data for {metric_label.lower()}."
+            idx = vals.idxmax()
+            pitch = str(adf.loc[idx, PITCH_TYPE_COL])
+            sval = _fmt_signed(adf.loc[idx, metric_col])
+            if has_low_stability:
+                if high_is_risk:
+                    return f"{pitch}: leans toward higher {metric_label.lower()} ({sval})"
+                return f"{pitch}: leans toward stronger {metric_label.lower()} ({sval})"
+            if high_is_risk:
+                return f"{pitch}: highest {metric_label.lower()} ({sval})"
+            return f"{pitch}: strongest {metric_label.lower()} ({sval})"
+
+        chip_style = (
+            "display:inline-block;margin:4px 6px 4px 0;padding:6px 10px;"
+            "border:1px solid #d5d5d5;border-radius:999px;background:#fff;font-size:12px;color:#222;"
+        )
+        chips = ui.div(
+            ui.tags.span(_chip_text("attack_score", "control impact"), style=chip_style),
+            ui.tags.span(_chip_text("putaway_score", "two-strike put-away impact"), style=chip_style),
+            ui.tags.span(_chip_text("danger_score", "hard-contact risk impact", high_is_risk=True), style=chip_style),
+            style="margin:4px 0 10px 0;",
+        )
+        low_sample_badge = ui.div()
+        if has_low_stability:
+            low_sample_badge = ui.div(
+                "Low sample: directional only.",
+                style=(
+                    "display:inline-block;margin:0 0 10px 0;padding:5px 9px;"
+                    "border-radius:999px;border:1px solid #f0b429;background:#fff7e6;"
+                    "font-size:12px;font-weight:800;color:#8a5d00;"
+                ),
+            )
+
+        def _impact_row(metric_label, value, positive_color, negative_color):
+            try:
+                fv = float(value)
+            except Exception:
+                fv = 0.0
+            width_pct = max(0.0, min(50.0, 50.0 * abs(fv) / float(max_abs)))
+            if fv >= 0:
+                left_w, right_w = 0.0, width_pct
+                left_bg, right_bg = "transparent", positive_color
+            else:
+                left_w, right_w = width_pct, 0.0
+                left_bg, right_bg = negative_color, "transparent"
+            return ui.div(
+                ui.div(metric_label, style="min-width:210px;font-size:12px;color:#333;font-weight:700;"),
+                ui.div(
+                    ui.div(
+                        ui.div(style=f"position:absolute;left:{50-left_w}%;top:0;height:100%;width:{left_w}%;background:{left_bg};"),
+                        ui.div(style=f"position:absolute;left:50%;top:0;height:100%;width:{right_w}%;background:{right_bg};"),
+                        ui.div(style="position:absolute;left:50%;top:0;height:100%;width:2px;background:#666;transform:translateX(-1px);"),
+                        style="position:relative;height:12px;background:#f1f1f1;border:1px solid #d0d0d0;border-radius:999px;overflow:hidden;",
+                    ),
+                    style="flex:1;min-width:200px;",
+                ),
+                ui.div(_fmt_signed(fv), style="min-width:58px;text-align:right;font-size:12px;color:#222;font-family:monospace;"),
+                style="display:flex;align-items:center;gap:10px;margin:6px 0;",
+            )
+
+        cards = []
+        for _, row in adf.iterrows():
+            pitch = str(row[PITCH_TYPE_COL])
+            stab = str(row.get("stability_label", "")).strip().lower()
+            is_low = stab in ("low stability", "very low stability")
+            card_opacity = "0.72" if is_low else "1.0"
+            stability_note = ui.div()
+            if is_low:
+                stability_note = ui.div(
+                    "Low sample: directional only.",
+                    style="font-size:11px;color:#8a5d00;font-weight:800;margin:3px 0 6px 0;",
+                )
+            cards.append(
+                ui.div(
+                    ui.div(pitch, style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;"),
+                    stability_note,
+                    _impact_row("Control impact", row["attack_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Two-strike put-away impact", row["putaway_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Hard-contact risk impact", row["danger_score"], "#e59a9a", "#86c59a"),
+                    style=(
+                        f"border:1px solid #e0e0e0;border-radius:8px;background:#fff;padding:8px 10px;"
+                        f"margin-bottom:8px;opacity:{card_opacity};"
+                    ),
+                )
+            )
+
+        return ui.div(chips, low_sample_badge, *cards)
+
+    @output
+    @render.ui
+    def prediction_model_drivers_ui():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return ui.div()
+        st = ml_prediction_state()
+        if not st.get("use_ml"):
+            return ui.div()
+        summ = st.get("summary") or {}
+        if not isinstance(summ, dict):
+            return ui.div()
+
+        def _drivers_card(title, card):
+            if not isinstance(card, dict) or not card.get("pitch"):
+                return None
+            pos = [str(x) for x in card.get("drivers_pos", []) if str(x).strip()]
+            neg = [str(x) for x in card.get("drivers_neg", []) if str(x).strip()]
+            src = str(card.get("drivers_source", "Fallback profile drivers")).strip() or "Fallback profile drivers"
+            stab = str(card.get("stability_label", "")).strip()
+            if not pos:
+                pos = ["limited positive signal"]
+            if not neg:
+                neg = ["limited counter-signal"]
+            return ui.div(
+                ui.div(
+                    f"{title}: {card.get('pitch', '—')}",
+                    style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;",
+                ),
+                ui.div(
+                    ui.tags.span("Upward drivers: ", style="font-weight:800;color:#166534;"),
+                    ", ".join(pos[:2]),
+                    style="font-size:12px;color:#222;margin-bottom:2px;",
+                ),
+                ui.div(
+                    ui.tags.span("Downward drivers: ", style="font-weight:800;color:#991b1b;"),
+                    ", ".join(neg[:2]),
+                    style="font-size:12px;color:#222;margin-bottom:4px;",
+                ),
+                ui.div(
+                    f"Source: {src} | Stability: {stab or '—'}",
+                    style="font-size:11px;color:#666;",
+                ),
+                style="border:1px solid #dfdfdf;background:#fff;border-radius:8px;padding:8px 10px;margin-bottom:8px;",
+            )
+
+        cards = [
+            _drivers_card("Best command", summ.get("best_strike")),
+            _drivers_card("Best put-away", summ.get("best_putaway")),
+            _drivers_card("Highest risk", summ.get("caution")),
+        ]
+        cards = [c for c in cards if c is not None]
+        if not cards:
+            return ui.div()
+
+        return ui.div(
+            ui.div("Model Drivers (SHAP)", style="font-size:14px;font-weight:900;color:#111;margin:10px 0 6px 0;"),
+            ui.div(
+                "SHAP drivers explain why model probabilities moved; impact bars show decision-score ranking.",
+                style="font-size:12px;color:#555;margin:0 0 8px 0;",
+            ),
+            *cards,
+        )
+
+    @output
+    @render.table
+    def prediction_advanced_table():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return pd.DataFrame()
+        st = ml_prediction_state()
+        if not st.get("use_ml") or st.get("df") is None or st.get("df").empty:
+            return pd.DataFrame()
+        adf = st["df"].copy()
+        keep = [PITCH_TYPE_COL, "attack_score", "putaway_score", "danger_score", "composite_score"]
+        keep = [c for c in keep if c in adf.columns]
+        adf = adf.sort_values("composite_score", ascending=False, kind="mergesort")
+        adf = adf[keep].rename(columns={
+            PITCH_TYPE_COL: "Pitch",
+            "attack_score": "Control impact",
+            "putaway_score": "Two-strike put-away impact",
+            "danger_score": "Hard-contact risk impact",
+            "composite_score": "Overall profile impact",
+        })
+        for c in ["Control impact", "Two-strike put-away impact", "Hard-contact risk impact", "Overall profile impact"]:
+            if c in adf.columns:
+                adf[c] = adf[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "—")
+        return adf
 
     # -----------------------------------------------------------------------
     # Comparison tab reactives
@@ -5493,6 +5594,14 @@ def server(input, output, session):
                     "Prediction",
                     ui.div(
                         ui.div("Prediction", class_="profile-title"),
+                        ui.div(
+                            ui.input_action_button(
+                                "retrain_prediction_models",
+                                "Retrain Prediction Models",
+                                class_="btn btn-sm btn-outline-dark",
+                            ),
+                            style="display:flex;justify-content:flex-end;margin:2px 0 10px 0;",
+                        ),
                         ui.output_ui("prediction_content"),
                         ui.output_ui("prediction_table_section"),
                         class_="panel",
