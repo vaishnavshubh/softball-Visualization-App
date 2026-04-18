@@ -1,2 +1,5 @@
 # softball-Visualization-App
-This is the repository for the Softball Industry Practicum specifically for the visualization shiny app
+This is the repository for the Sports Analytics Applications we made for Purdue Athletics - Softball
+
+Find the code for the main shiny application here: app/app.py
+Finc the code for the pdf reports applicaiton here: pdf app/pdf_report.py
