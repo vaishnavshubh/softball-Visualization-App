@@ -11,8 +11,11 @@ Layout (matches sketch):
       2x2 grid: Usage pie, Location, Summary table, Movement
 """
 
+import glob
+import json
 import math
 import os
+import sys
 from datetime import date
 
 import matplotlib
@@ -24,392 +27,20 @@ from matplotlib.patches import Rectangle, Polygon, FancyBboxPatch, Ellipse
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
-from google.api_core.client_options import ClientOptions
-from google.cloud import bigquery
 from shiny import App, render, ui, reactive
-
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+import prediction_pipeline  # noqa: E402  # league-wide ML for Prediction tab
+from constants import *  # noqa: E402, F401, F403  # static config / rosters / colors
+
+V3_PATH = os.path.join(APP_DIR, "data", "v3")
 STATIC_DIR = os.path.join(APP_DIR, "static")
 
-#Team name map
-TEAM_NAME_MAP = {
-    "UNI_KAN_SB": "University of Kansas",
-    "PUR_BOI_SB": "Purdue University",
-    "TEX_STA_SB": "Texas State University",
-    "UNI_IOW_SB": "University of Iowa",
-    "UNI_ARK_SB": "University of Arkansas",
-    "NEB_COR_SB": "University of Nebraska",
-    "BOS_COL_SB": "Boston College",
-    "CRE_UNI_SB": "Creighton University",
-    "IOW_STA_SB": "Iowa State University",
-    "STA_WOL_SB": "North Carolina State University",
-    "LOU_TEC_SB": "Louisiana Tech University",
-    "DUK_BLU_SB": "Duke University",
-    "UNI_UTA_SB": "University of Utah",
-    "ILL_FIG_SB": "University of Illinois",
-    "FLO_GAT_SB": "University of Florida",
-    "CAL_BAP_SB": "California Baptist University",
-    "BYU_COU_SB": "Brigham Young University",
-    "GEO_BUL_SB": "University of Georgia",
-    "NOR_GEO_SB": "University of North Georgia",
-    "ARI_WIL_SB": "University of Arizona",
-    "AUB_TIG_SB": "Auburn University",
-    "MIN_GOL_SB": "University of Minnesota",
-    "UNI_KEN_SB": "University of Kentucky",
-    "LON_BEA_SB": "Long Beach State University",
-    "LSU_TIG_SB": "Louisiana State University",
-    "CLE_TIG_SB": "Clemson University",
-    "OKL_SOO_SB": "University of Oklahoma",
-    "OKL_STA_SB": "Oklahoma State University",
-    "ORE_STA_SB": "Oregon State University",
-    "VIR_CAV_SB": "University of Virginia",
-    "TEX_TEC_SB": "Texas Tech University",
-    "SAN_DIE1_SB": "San Diego State University",
-    "SAN_DIE2_SB": "University of San Diego",
-    "UNI_TEN_SB": "University of Tennessee",
-    "STA_UNI_SB": "Stanford University",
-    "VIR_TEC_SB": "Virginia Tech",
-    "TEX_A&M_SB": "Texas A&M University",
-    "MEM_TIG_SB": "University of Memphis",
-    "IND_HOO_SB": "Indiana University",
-    "CHA_49E_SB": "University of North Carolina at Charlotte",
-    "OMA_MAV_SB": "University of Nebraska Omaha",
-    "WAS_HUS_SB": "University of Washington",
-    "TEX_LON_SB": "University of Texas",
-    "WIC_STA_SB": "Wichita State University",
-    "ABI_CHR_SB": "Abilene Christian University",
-    "AKR_ZIP_SB": "University of Akron",
-    "ALA_A&M_SB": "Alabama A&M University",
-    "ALA_CRI_SB": "University of Alabama",
-    "ALC_STA_SB": "Alcorn State University",
-    "AND_UNI_SB": "Anderson University",
-    "APP_STA_SB": "Appalachian State University",
-    "ARI_STA_SB": "Arizona State University",
-    "AUG_UNI_SB": "Augusta University",
-    "AUS_PEA_SB": "Austin Peay State University",
-    "BAL_STA_SB": "Ball State University",
-    "BAR_UNI_SB": "Barry University",
-    "BAY_BEA_SB": "Baylor University",
-    "BEL_UNI_SB": "Belhaven University",
-    "BEL_BEA_SB": "Belmont University",
-    "BET_COO_SB": "Bethune-Cookman University",
-    "BIN_UNI_SB": "Binghamton University",
-    "BOI_STA_SB": "Boise State University",
-    "BOS_UNI_SB": "Boston University",
-    "BRA_BRA_SB": "Bradley University",
-    "BRO_UNI_SB": "Brown University",
-    "BRY_UNI_SB": "Bryant University",
-    "BUC_UNI_SB": "Bucknell University",
-    "BUT_COM_SB": "Butler Community College",
-    "BUT_UNI_SB": "Butler University",
-    "CAL_POL_SB": "California Polytechnic State University",
-    "CAL_STA_SB": "California State University, Fullerton",
-    "CAL_GOL_SB": "University of California, Berkeley",
-    "CAL_STA1_SB": "California State University, Northridge",
-    "CAM_FIG_SB": "Campbell University",
-    "CAR_NEW_SB": "Carson-Newman University",
-    "CEN_ARK_SB": "University of Central Arkansas",
-    "CEN_MIC_SB": "Central Michigan University",
-    "CHI_COL_SB": "Chipola College",
-    "COA_CAR_SB": "Coastal Carolina University",
-    "COL_CHA_SB": "College of Charleston",
-    "COL_CHR_SB": "Colorado Christian University",
-    "COL_STA_SB": "Colorado State University",
-    "COP_COP_SB": "Copiah-Lincoln Community College",
-    "CSU_BAK_SB": "California State University, Bakersfield",
-    "DEP_BLU_SB": "DePaul University",
-    "DET_MER_SB": "University of Detroit Mercy",
-    "DRA_UNI_SB": "Drake University",
-    "EAS_CAR_SB": "East Carolina University",
-    "EAS_TEN_SB": "East Tennessee State University",
-    "EAS_TEX_SB": "East Texas A&M University",
-    "EAS_ILL_SB": "Eastern Illinois University",
-    "ELO_UNI_SB": "Elon University",
-    "EMB_RID_SB": "Embry-Riddle Aeronautical University",
-    "EMM_UNI_SB": "Emmanuel University",
-    "EMP_STA_SB": "Emporia State University",
-    "EVA_PUR_SB": "University of Evansville",
-    "FLA_UNI_SB": "Flagler College",
-    "FLO_ATL_SB": "Florida Atlantic University",
-    "FLO_GUL_SB": "Florida Gulf Coast University",
-    "FLO_INT_SB": "Florida International University",
-    "FLO_STA_SB": "Florida State University",
-    "FOR_UNI_SB": "Fordham University",
-    "FRE_STA_SB": "California State University, Fresno",
-    "FUR_PAL_SB": "Furman University",
-    "GAR_CIT_SB": "Garden City Community College",
-    "GAR_RUN_SB": "Gardner-Webb University",
-    "GEO_WAS1_SB": "George Washington University",
-    "GEO_HOY_SB": "Georgetown University",
-    "GEO_GWI_SB": "Georgia Gwinnett College",
-    "GEO_SOU_SB": "Georgia Southern University",
-    "GEO_STA_SB": "Georgia State University",
-    "GEO_TEC_SB": "Georgia Institute of Technology",
-    "GRA_CAN_SB": "Grand Canyon University",
-    "GRA_JUN_SB": "Grand Junction",
-    "GRA_JUN1_SB": "Grand Junction Central",
-    "GRE_BAY_SB": "University of Wisconsin-Green Bay",
-    "HAW_RAI_SB": "University of Hawaiʻi",
-    "HOW_UNI_SB": "Howard University",
-    "HUT_COM_SB": "Hutchinson Community College",
-    "IDA_STA_SB": "Idaho State University",
-    "ILL_STA_SB": "Illinois State University",
-    "INC_WOR_SB": "University of the Incarnate Word",
-    "IND_STA_SB": "Indiana State University",
-    "IND_UNI_SB": "Indiana University Indianapolis",
-    "JAC_STA_SB": "Jacksonville State University",
-    "JAC_UNI_SB": "Jacksonville University",
-    "JAM_MAD_SB": "James Madison University",
-    "JON_COL_SB": "Jones College",
-    "KEN_STA_SB": "Kennesaw State University",
-    "LAM_UNI_SB": "Lamar University",
-    "LEE_UNI_SB": "Lee University",
-    "LEH_UNI_SB": "Lehigh University",
-    "LIB_LAD_SB": "Liberty University",
-    "LIN_MEM_SB": "Lincoln Memorial University",
-    "LIN_LIO_SB": "Lindenwood University",
-    "LIP_LIP_SB": "Lipscomb University",
-    "LIU_SHA_SB": "Long Island University",
-    "LON_LAN_SB": "Longwood University",
-    "LOU_COL_SB": "Louisburg College",
-    "LOU_RAG_SB": "University of Louisiana",
-    "LOU_CAR_SB": "University of Louisville",
-    "LOY_CHI_SB": "Loyola University Chicago",
-    "LOY_MAR_SB": "Loyola Marymount University",
-    "MAR_UNI_SB": "Marist University",
-    "MAR_THU_SB": "Marshall University",
-    "MAR_TER_SB": "University of Maryland",
-    "MCL_COL_SB": "McLennan Community College",
-    "MCN_STA1_SB": "McNeese State University",
-    "MER_BEA_SB": "Mercer University",
-    "MET_STA_SB": "Metropolitan State University of Denver",
-    "MIA_(OH_SB": "Miami Ohio University",
-    "MIC_STA_SB": "Michigan State University",
-    "MIC_WOL_SB": "University of Michigan",
-    "MID_TEN_SB": "Middle Tennessee State University",
-    "MIS_STA_SB": "Mississippi State University",
-    "MIS_STA1_SB": "Missouri State University",
-    "MIS_TIG_SB": "University of Missouri",
-    "MON_GRI_SB": "University of Montana",
-    "MUR_STA_SB": "Murray State College",
-    "NEW_MEX1_SB": "University of New Mexico",
-    "NEW_MEX_SB": "New Mexico State University",
-    "NIC_STA_SB": "Nicholls State University",
-    "NOR_ALA_SB": "University of North Alabama",
-    "NOR_CAR2_SB": "North Carolina A&T State University",
-    "NOR_CAR1_SB": "North Carolina Central University",
-    "NOR_CAR_SB": "University of North Carolina",
-    "NOR_DAK1_SB": "University of North Dakota",
-    "NOR_DAK_SB": "North Dakota State University",
-    "NOR_ILL_SB": "Northern Illinois University",
-    "NOR_FLO_SB": "Northwest Florida State College",
-    "NOR_STA_SB": "Northwestern State University",
-    "NOR_WIL_SB": "Northwestern University",
-    "NOR_UNI_SB": "Northwood University",
-    "OHI_STA_SB": "Ohio State University",
-    "OKL_CHR_SB": "Oklahoma Christian University",
-    "OLE_MIS_SB": "University of Mississippi",
-    "ORE_DUC_SB": "University of Oregon",
-    "PEN_STA_SB": "Pennsylvania State University",
-    "PRA_VIE_SB": "Prairie View A&M University",
-    "PRE_BLU_SB": "Presbyterian College",
-    "PRI_UNI_SB": "Princeton University",
-    "PRO_FRI_SB": "Providence College",
-    "QUE_UNI_SB": "Queens University of Charlotte",
-    "RAD_UNI_SB": "Radford University",
-    "ROA_STA_SB": "Roane State Community College",
-    "RUT_RUT_SB": "Rutgers University",
-    "SAI_FRA_SB": "Saint Francis University",
-    "SAI_LEO_SB": "Saint Leo University",
-    "SAI_MAR_SB": "Saint Mary's College",
-    "SAL_LAK_SB": "Salt Lake Community College",
-    "SAM_HOU_SB": "Sam Houston State University",
-    "SAM_UNI_SB": "Samford University",
-    "SAN_JOS_SB": "San Jose State University",
-    "SAN_CLA_SB": "Santa Clara University",
-    "SEA_UNI_SB": "Seattle University",
-    "SEM_STA_SB": "Seminole State College",
-    "SET_HAL_SB": "Seton Hall University",
-    "SHO_UNI_SB": "Shorter University",
-    "SOU_ALA_SB": "University of South Alabama",
-    "SOU_CAR_SB": "University of South Carolina",
-    "SOU_DAK_SB": "South Dakota State University",
-    "SOU_FLO_SB": "University of South Florida",
-    "SOU_MIS1_SB": "Southeast Missouri State University",
-    "SOU_LOU_SB": "Southeastern Louisiana University",
-    "SOU_ILL_SB": "Southern Illinois University Edwardsville",
-    "SOU_ILL1_SB": "Southern Illinois University",
-    "SOU_IND_SB": "University of Southern Indiana",
-    "SOU_MIS_SB": "University of Southern Mississippi",
-    "SOU_NAZ_SB": "Southern Nazarene University",
-    "SOU_UNI_SB": "Southern University",
-    "SOU_UTA_SB": "Southern Utah University",
-    "ST._BON_SB": "St. Bonaventure University",
-    "STE_AUS_SB": "Stephen F. Austin State University",
-    "STE_HAT_SB": "Stetson University",
-    "SYR_ORA_SB": "Syracuse University",
-    "TEM_COL_SB": "Temple College",
-    "TEN_TEC_SB": "Tennessee Tech University",
-    "TEX_A&M2_SB": "Texas A&M University-Corpus Christi",
-    "TRO_TRO_SB": "Troy University",
-    "TUL_GOL_SB": "University of Tulsa",
-    "TUS_UNI_SB": "Tusculum University",
-    "RIV_RIV_SB": "University of California, Riverside",
-    "SAN_DIE_SB": "University of California, San Diego",
-    "SAN_BAR_SB": "University of California, Santa Barbara",
-    "UCF_KNI_SB": "University of Central Florida",
-    "UCL_BRU_SB": "University of California, Los Angeles",
-    "UCO_HUS_SB": "University of Connecticut",
-    "UIC_UIC_SB": "University of Illinois Chicago",
-    "UNC_WIL_SB": "University of North Carolina Wilmington",
-    "UNI_ALA_SB": "University of Alabama at Birmingham",
-    "UNI_DEL_SB": "University of Delaware",
-    "UNI_HOU_SB": "University of Houston",
-    "UNI_LOU_SB": "University of Louisiana Monroe",
-    "UNI_MAS_SB": "University of Massachusetts",
-    "UNI_MIS_SB": "University of Missouri-Kansas City",
-    "UNI_NEV_SB": "University of Nevada",
-    "UNI_NOR2_SB": "University of North Florida",
-    "UNI_NOR1_SB": "University of North Texas",
-    "UNI_NOR3_SB": "University of Northern Iowa",
-    "DAV_AGG_SB": "UC Davis Aggies",
-    "HAM_UNI_SB": "Hampton University",
-    "UNI_NOT_SB": "University of Notre Dame",
-    "UNI_SAN_SB": "University of San Diego",
-    "UNI_SOU_SB": "University of South Dakota",
-    "UNI_ST.2_SB": "University of St. Thomas",
-    "UNI_TEX1_SB": "University of Texas at El Paso",
-    "UNI_TEX2_SB": "University of Texas at San Antonio",
-    "UNI_TOL_SB": "University of Toledo",
-    "UNI_WES_SB": "University of West Georgia",
-    "UNL_UNL_SB": "University of Nevada, Las Vegas",
-    "USC_AIK_SB": "University of South Carolina Aiken",
-    "USC_BEA_SB": "University of South Carolina Beaufort",
-    "USC_UPS_SB": "University of South Carolina Upstate",
-    "ARL_MAV_SB": "University of Texas at Arlington",
-    "UTA_STA_SB": "Utah State University",
-    "UTA_TEC_SB": "Utah Tech University",
-    "UTA_VAL_SB": "Utah Valley University",
-    "VAL_STA_SB": "Valdosta State University",
-    "VAL_VAL_SB": "Valparaiso University",
-    "VIL_WIL_SB": "Villanova University",
-    "WAL_STA1_SB": "Wallace State Community College",
-    "WAL_STA_SB": "Walters State Community College",
-    "WEB_STA_SB": "Weber State University",
-    "WES_CAR_SB": "Western Carolina University",
-    "WES_NEB_SB": "Western Nebraska Community College",
-    "WIN_EAG_SB": "Winthrop University",
-    "WIS_BAD_SB": "University of Wisconsin",
-    "WOF_TER_SB": "Wofford College",
-    "YAL_BUL_SB": "Yale University",
-    "DEL_STA_SB": "Delaware State University",
-    "ALA_STA_SB": "Alabama State University",
-    "DAY_FLY_SB": "University of Dayton",
-    "MUR_STA1_SB": "Murray State University",
-    "OAK_GOL_SB": "Oakland University",
-    "TAR_STA_SB": "Tarleton State University",
-    "UNI_PIT_SB": "University of Pittsburgh",
-    
-}
-
-
-# Put your Purdue logo image inside app/static/
-# Example file name:
-PURDUE_LOGO_FILENAME = "purdue-logo.png"
-PURDUE_LOGO_SRC = PURDUE_LOGO_FILENAME  # served from static_assets
-
-FIG_SIZE = (3.6, 2.8)
-
-COLUMNS_TO_KEEP = [
-    "PitchNo", "Date", "Time", "PitchofPA",
-    "Pitcher", "PitcherId", "PitcherThrows", "PitcherTeam",
-    "Batter", "BatterId", "BatterSide", "BatterTeam",
-    "Balls", "Strikes", "PitchCall", "TaggedPitchType",
-    "RelSpeed", "SpinRate", "SpinAxis", "Tilt",
-    "InducedVertBreak", "HorzBreak",
-    "PlateLocHeight", "PlateLocSide",
-    "TaggedHitType", "PlayResult", "KorBB", "ExitSpeed", "Angle", "Direction",
-]
-
-PITCH_TYPE_COL = "TaggedPitchType"
-X_MOV = "HorzBreak"
-Y_MOV = "InducedVertBreak"
-
-# BigQuery fact_pitch may use snake_case; plots expect Trackman-style names.
-_FACT_SNAKE_TO_APP = {
-    "pitch_no": "PitchNo",
-    "pitchof_pa": "PitchofPA",
-    "date": "Date",
-    "time": "Time",
-    "pitcher": "Pitcher",
-    "pitcher_id": "PitcherId",
-    "pitcher_throws": "PitcherThrows",
-    "pitcher_team": "PitcherTeam",
-    "batter": "Batter",
-    "batter_id": "BatterId",
-    "batter_side": "BatterSide",
-    "batter_team": "BatterTeam",
-    "balls": "Balls",
-    "strikes": "Strikes",
-    "pitch_call": "PitchCall",
-    "tagged_pitch_type": "TaggedPitchType",
-    "rel_speed": "RelSpeed",
-    "spin_rate": "SpinRate",
-    "spin_axis": "SpinAxis",
-    "tilt": "Tilt",
-    "induced_vert_break": "InducedVertBreak",
-    "horz_break": "HorzBreak",
-    "plate_loc_height": "PlateLocHeight",
-    "plate_loc_side": "PlateLocSide",
-    "tagged_hit_type": "TaggedHitType",
-    "play_result": "PlayResult",
-    "kor_bb": "KorBB",
-    "exit_speed": "ExitSpeed",
-    "angle": "Angle",
-    "direction": "Direction",
-    "date_only": "DateOnly",
-    "data_source": "DataSource",
-    "session_type": "SessionType",
-    "session_type_reason": "SessionTypeReason",
-}
-
-
-def normalize_fact_pitch_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    df = df.rename(
-        columns={k: v for k, v in _FACT_SNAKE_TO_APP.items() if k in df.columns}
-    )
-    if "DateOnly" in df.columns and "Date" not in df.columns:
-        df["Date"] = pd.to_datetime(df["DateOnly"], errors="coerce")
-    elif "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    if "DateOnly" not in df.columns and "Date" in df.columns:
-        df["DateOnly"] = df["Date"].dt.date
-    elif "DateOnly" in df.columns:
-        df["DateOnly"] = pd.to_datetime(df["DateOnly"], errors="coerce").dt.date
-    for c in [
-        "Pitcher", "Batter", PITCH_TYPE_COL, "PitchCall",
-        "PitcherTeam", "BatterTeam", "PitcherThrows", "BatterSide",
-    ]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
-    return df
-
-# Fixed strike zone (feet)
-ZONE_LEFT, ZONE_RIGHT = -0.83, 0.83
-ZONE_BOTTOM, ZONE_TOP = 1.5, 3.5
-
-MOV_XLIM = (-20, 20)
-MOV_YLIM = (-20, 20)
-
-# Purdue detection (robust: does not require exact team string)
-
-PURDUE_CODE = "PUR_BOI_SB"
 
 def is_purdue_team(team_value: str) -> bool:
     if team_value is None or pd.isna(team_value):
@@ -417,19 +48,6 @@ def is_purdue_team(team_value: str) -> bool:
     return str(team_value).strip() == PURDUE_CODE
 
 # Pitch colors (consistent)
-PITCH_TYPE_FIXED_COLORS = {
-    "Fastball":  "#475569",
-    "Changeup":  "#D4A017",
-    "Curveball": "#1B9E77",
-    "Riseball":  "#1F77FF",
-    "Dropball":  "#D62728",
-    "Screwball": "#9467BD",
-    "Offspeed":  "#FF7F0E",
-    "Riser": "#1F77FF",
-    "Rise":  "#1F77FF",
-    "Drop":  "#D62728",
-}
-PITCH_TYPE_FALLBACK_COLORS = ["#17BECF", "#8C564B", "#E377C2", "#7F7F7F"]
 
 
 # ---------------------------------------------------------------------------
@@ -560,36 +178,342 @@ def apply_session_filter_for_team(df, team, session_value):
     return df[df["SessionType"] == session_value]
 
 
-ACTIVE_ROSTER_2026 = {
-    "Rainey, Kendyl",
-    "Banks, Khloe",
-    "Franks, Kylie",
-    "Moore, Anna",
-    "Reefe, Delaney",
-    "Douglas, Bella",
-    "Krantz, Jensen",
-    "Condon, Maura",
-    "Fontenot, Bri",
-    "Moore, Malone",
-    "Campbell, Ashlynn",
-    "Bailey, Emma",
-    "Sosa, Gabriela",
-    "Waggoner, Haley",
-    "Gossett, Julia",
-    "Sarago, Kate",
-    "Perez, Brooke",
-    "Armstrong, Ansley",
-    "Painter, Haley",
-    "Polar, Moriah",
-}
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _safe_mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
 
-KNOWN_FORMER_PLAYERS = {
-    "Klochack, Kendall",
-    "McFadden, Olivia",
-    "Bailey, Kyndall",
-}
 
-PURDUE_TEAM_KEYS = {"PUR_BOI_SB"}
+def _dedupe_trackman_paths(paths):
+    """Trackman publishes two versions of each game: an ``_unverified`` CSV
+    downloaded on game day, and a verified CSV published days later after
+    Trackman staff review. Both may sit under V3_PATH (often in different
+    date folders based on download date). This helper groups by filename
+    stem and keeps the verified file when it exists, falling back to the
+    unverified file so same-day games still appear in the dashboard.
+    """
+    groups = {}  # game_key -> {"verified": path, "unverified": path}
+    for full in paths:
+        base = os.path.basename(full)
+        stem, ext = os.path.splitext(base)
+        if ext.lower() != ".csv":
+            continue
+        if stem.endswith("_unverified"):
+            game_key = stem[: -len("_unverified")]
+            kind = "unverified"
+        else:
+            game_key = stem
+            kind = "verified"
+        bucket = groups.setdefault(game_key, {"verified": None, "unverified": None})
+        current = bucket[kind]
+        if current is None or _safe_mtime(full) > _safe_mtime(current):
+            bucket[kind] = full
+
+    # Prefer verified; fall back to unverified when no verified exists yet.
+    winners = [b["verified"] or b["unverified"] for b in groups.values()]
+    return sorted(p for p in winners if p)
+
+
+def get_csv_paths():
+    if not os.path.isdir(V3_PATH):
+        return []
+    pattern = os.path.join(V3_PATH, "**", "*.csv")
+    paths = sorted(glob.glob(pattern, recursive=True))
+    paths = _dedupe_trackman_paths(paths)
+    out = []
+    for p in paths:
+        try:
+            rel = os.path.relpath(p, V3_PATH)
+        except ValueError:
+            rel = os.path.basename(p)
+        out.append((rel, p))
+    return out
+
+def _data_dir_mtime():
+    if not os.path.isdir(V3_PATH):
+        return 0
+    try:
+        t = os.path.getmtime(V3_PATH)
+        for e in os.listdir(V3_PATH):
+            p = os.path.join(V3_PATH, e)
+            t = max(t, os.path.getmtime(p))
+        return t
+    except Exception:
+        return 0
+
+def get_csv_paths_with_dates():
+    cache_path = os.path.join(APP_DIR, ".csv_metadata_cache.json")
+    v3_mtime = _data_dir_mtime()
+
+    if os.path.isfile(cache_path):
+        try:
+            with open(cache_path, "r") as f:
+                data = json.load(f)
+            if data.get("v3_path") == V3_PATH and data.get("mtime") == v3_mtime:
+                rows = []
+                gmin_s, gmax_s = data.get("global_min"), data.get("global_max")
+                gmin = date.fromisoformat(gmin_s) if gmin_s else None
+                gmax = date.fromisoformat(gmax_s) if gmax_s else None
+                for rel, full, dmin_s, dmax_s in data.get("rows", []):
+                    dmin = date.fromisoformat(dmin_s) if dmin_s else None
+                    dmax = date.fromisoformat(dmax_s) if dmax_s else None
+                    if dmin and dmax:
+                        rows.append((rel, full, dmin, dmax))
+                return rows, gmin, gmax
+        except Exception:
+            pass
+
+    rows = []
+    gmin, gmax = None, None
+    for rel, full in get_csv_paths():
+        try:
+            df = pd.read_csv(full, usecols=["Date"])
+        except Exception:
+            continue
+        if "Date" not in df.columns or df["Date"].empty:
+            continue
+        dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
+        if dates.empty:
+            continue
+        dmin = dates.min().date()
+        dmax = dates.max().date()
+        rows.append((rel, full, dmin, dmax))
+        gmin = dmin if (gmin is None or dmin < gmin) else gmin
+        gmax = dmax if (gmax is None or dmax > gmax) else gmax
+
+    try:
+        cache_data = {
+            "v3_path": V3_PATH,
+            "mtime": v3_mtime,
+            "rows": [[rel, full, str(dmin), str(dmax)] for rel, full, dmin, dmax in rows],
+            "global_min": str(gmin) if gmin else None,
+            "global_max": str(gmax) if gmax else None,
+        }
+        with open(cache_path, "w") as f:
+            json.dump(cache_data, f)
+    except Exception:
+        pass
+
+    return rows, gmin, gmax
+
+# Map Purdue batter names → correct BatterIds (fix for Trackman placeholder IDs)
+
+
+def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
+    try:
+        # Force ID columns to string so placeholder IDs don't get coerced to float
+        df = pd.read_csv(full_path, dtype={"BatterId": str, "PitcherId": str})
+    except Exception:
+        try:
+            df = pd.read_csv(full_path)
+        except Exception:
+            return None
+
+    cols = [c for c in COLUMNS_TO_KEEP if c in df.columns]
+    if not cols:
+        return None
+    df = df[cols].copy()
+
+    for c in [
+        "Pitcher", "Batter", PITCH_TYPE_COL, "PitchCall",
+        "PitcherTeam", "BatterTeam", "PitcherThrows", "BatterSide"
+    ]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+
+    # Fix batter IDs: replace placeholder/scientific-notation IDs
+    if "BatterTeam" in df.columns and "Batter" in df.columns and "BatterId" in df.columns:
+        df["BatterId"] = df["BatterId"].astype(str).str.strip()
+
+        def _is_placeholder(bid):
+            s = str(bid).strip().lower()
+            # Scientific notation like '1e+11', '1e+12', or the expanded form
+            if "e+" in s or "e-" in s:
+                return True
+            if s in ("", "nan", "none", "1000000000000", "100000000000"):
+                return True
+            return False
+
+        # For Purdue batters: use name → correct ID mapping
+        is_purdue = df["BatterTeam"].astype(str).str.strip() == PURDUE_CODE
+        if is_purdue.any():
+            def _fix_purdue_bid(row):
+                if _is_placeholder(row["BatterId"]):
+                    name = str(row["Batter"]).strip()
+                    return PURDUE_BATTER_ID_MAP.get(name, f"SYN_{name}")
+                return row["BatterId"]
+            df.loc[is_purdue, "BatterId"] = df.loc[is_purdue].apply(_fix_purdue_bid, axis=1)
+
+        # For non-Purdue batters with placeholder IDs: synthesize from name+team
+        # so each unique batter gets their own ID instead of all collapsing to one
+        non_purdue = ~is_purdue
+        if non_purdue.any():
+            def _fix_other_bid(row):
+                if _is_placeholder(row["BatterId"]):
+                    name = str(row["Batter"]).strip()
+                    team = str(row["BatterTeam"]).strip()
+                    return f"SYN_{team}_{name}"
+                return row["BatterId"]
+            df.loc[non_purdue, "BatterId"] = df.loc[non_purdue].apply(_fix_other_bid, axis=1)
+
+    return df
+
+# ── Rapsodo CSV loader ────────────────────────────────────────────────────
+
+
+# Map Rapsodo Player IDs → Trackman PitcherIds
+
+def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
+    try:
+        # Find header row (has "No" and "Date")
+        with open(full_path) as fh:
+            lines = fh.readlines()
+        header_row = None
+        player_name = ""
+        player_id = ""
+        for i, line in enumerate(lines):
+            if '"Player Name:"' in line or 'Player Name:' in line:
+                player_name = line.split(",", 1)[1].strip().strip('"')
+            if '"Player ID:"' in line or 'Player ID:' in line:
+                player_id = line.split(",", 1)[1].strip().strip('"')
+            if '"No"' in line and '"Date"' in line:
+                header_row = i
+                break
+        if header_row is None:
+            return None
+
+        df = pd.read_csv(full_path, skiprows=header_row)
+    except Exception:
+        return None
+
+    if df.empty:
+        return None
+
+    # Rename columns to Trackman names
+    df = df.rename(columns=RAPSODO_COL_MAP)
+
+    # Map pitch type names
+    if "TaggedPitchType" in df.columns:
+        df["TaggedPitchType"] = df["TaggedPitchType"].astype(str).str.strip().map(
+            lambda pt: RAPSODO_PITCH_MAP.get(pt, pt)
+        )
+
+    # Map Is Strike → PitchCall
+    if "Is Strike" in df.columns:
+        df["PitchCall"] = df["Is Strike"].astype(str).str.strip().map(
+            {"Y": "StrikeCalled", "N": "BallCalled"}
+        ).fillna("BallCalled")
+
+    # Ensure numeric columns are numeric
+    for c in ["RelSpeed", "SpinRate", "PlateLocSide", "PlateLocHeight",
+              "HorzBreak", "InducedVertBreak"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Rapsodo reports location in inches — convert to feet for Trackman compatibility
+    for c in ["PlateLocSide", "PlateLocHeight"]:
+        if c in df.columns:
+            df[c] = df[c] / 12.0
+
+    # Parse date
+    df["Date"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
+
+    # Add pitcher info — map to Trackman PitcherId for consistency
+    # Convert "Emma Bailey" → "Bailey, Emma" to match Trackman format
+    name_parts = player_name.strip().split()
+    if len(name_parts) >= 2:
+        pitcher_name = f"{name_parts[-1]}, {' '.join(name_parts[:-1])}"
+    else:
+        pitcher_name = player_name
+    df["Pitcher"] = pitcher_name
+    trackman_id = RAPSODO_TO_TRACKMAN_ID.get(str(player_id).strip(), str(player_id))
+    df["PitcherId"] = trackman_id
+    df["PitcherTeam"] = PURDUE_CODE
+    df["PitcherThrows"] = "Right"
+
+    # Mark as Rapsodo data
+    df["DataSource"] = "rapsodo"
+
+    # Keep only columns the app uses (plus extras)
+    keep = [c for c in COLUMNS_TO_KEEP if c in df.columns]
+    extra = ["DataSource", "RelHeight", "RelSide", "Extension"]
+    keep += [c for c in extra if c in df.columns and c not in keep]
+    df = df[keep].copy()
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# HitTrax data (session-aggregated batter data)
+# ---------------------------------------------------------------------------
+# Map HitTrax filename stem → Trackman-format player name
+
+def load_hittrax_csv(full_path: str) -> pd.DataFrame | None:
+    try:
+        df = pd.read_csv(full_path)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+
+    # Strip leading/trailing whitespace from column names
+    df.columns = [c.strip() for c in df.columns]
+
+    # Parse date
+    if "Date" not in df.columns:
+        return None
+    df["Date"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
+    df = df[df["Date"].notna()].copy()
+    if df.empty:
+        return None
+
+    # Coerce numeric columns
+    numeric_cols = ["AB", "H", "EBH", "HR", "Points", "LD %", "FB %", "GB %",
+                    "AvgV", "MaxV", "Dist"]
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Parse .XXX rate columns as floats (HHA, AVG, SLG, LPH)
+    for c in ["HHA", "AVG", "SLG", "LPH"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Player name from filename stem
+    stem = os.path.splitext(os.path.basename(full_path))[0]
+    player_name = HITTRAX_NAME_MAP.get(stem, stem.replace("_", ", "))
+    df["Player"] = player_name
+    df["BatterTeam"] = PURDUE_CODE
+    df["DataSource"] = "hittrax"
+    df["DateOnly"] = df["Date"].dt.date
+
+    return df
+
+
+def build_hittrax_df():
+    hittrax_dir = os.path.join(APP_DIR, "data", "hittrax")
+    if not os.path.isdir(hittrax_dir):
+        return pd.DataFrame()
+    dfs = []
+    for fname in sorted(glob.glob(os.path.join(hittrax_dir, "*.csv"))):
+        df = load_hittrax_csv(fname)
+        if df is None or df.empty:
+            continue
+        dfs.append(df)
+    if not dfs:
+        return pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True)
+
+
+HITTRAX_DF = build_hittrax_df()
+
+
+
+
 
 def clean_player_name(x):
     if pd.isna(x):
@@ -987,77 +911,304 @@ def compute_comparison_metrics(df: pd.DataFrame) -> dict:
         "whiff_pct":   (is_whiff.sum() / is_swing.sum()) if is_swing.sum() > 0 else np.nan,
     }
 
+# ---------------------------------------------------------------------------
+# Prediction tab: descriptive + ML pitch-type analysis
+# ---------------------------------------------------------------------------
+PREDICTION_HARD_CONTACT_EV = 85.0
+PREDICTION_MIN_STRIKE_N = 12
+PREDICTION_MIN_SWINGS_PUTAWAY = 8
+PREDICTION_MIN_CONTACT_CAUTION = 5
+
+def _prediction_sample_warning(n: int) -> str:
+    if n < 6:   return "Very low sample — interpret cautiously"
+    if n < 12:  return "Low sample"
+    if n < 25:  return "Moderate sample"
+    return ""
+
+
+def build_prediction_by_pitch_type(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "PitchCall" not in df.columns or PITCH_TYPE_COL not in df.columns:
+        return pd.DataFrame()
+    d = df[is_valid_pitch_type(df[PITCH_TYPE_COL])].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    swing_events = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+    strike_events = {"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+    contact_events = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+    rows = []
+    for ptype, g in d.groupby(PITCH_TYPE_COL, dropna=False):
+        pc = g["PitchCall"].astype(str).str.strip()
+        n = len(g)
+        is_swing = pc.isin(swing_events)
+        is_whiff = pc.eq("StrikeSwinging")
+        is_contact = pc.isin(contact_events)
+        in_play = pc.eq("InPlay")
+        ev_s = pd.to_numeric(g["ExitSpeed"], errors="coerce") if "ExitSpeed" in g.columns else pd.Series(np.nan, index=g.index)
+
+        swing_count = int(is_swing.sum())
+        whiff_count = int(is_whiff.sum())
+        contact_count = int(is_contact.sum())
+        hard_contact_count = int((in_play & (ev_s >= PREDICTION_HARD_CONTACT_EV)).sum())
+
+        rows.append({
+            PITCH_TYPE_COL: ptype,
+            "pitch_count": n,
+            "strike_pct": float(pc.isin(strike_events).mean()) if n else np.nan,
+            "contact_pct": float(is_contact.mean()) if n else np.nan,
+            "swing_count": swing_count,
+            "whiff_count": whiff_count,
+            "contact_count": contact_count,
+            "whiff_pct": (whiff_count / swing_count) if swing_count > 0 else np.nan,
+            "hard_contact_count": hard_contact_count,
+            "hard_contact_risk": (hard_contact_count / contact_count) if contact_count > 0 else np.nan,
+            "sample_warning": _prediction_sample_warning(n),
+        })
+
+    out = pd.DataFrame(rows)
+    return out.sort_values("pitch_count", ascending=False).reset_index(drop=True) if not out.empty else out
+
+
+def select_prediction_summary(pred: pd.DataFrame) -> dict:
+    out = {"best_strike": None, "best_putaway": None, "caution": None}
+    if pred is None or pred.empty or PITCH_TYPE_COL not in pred.columns:
+        return out
+    p = pred.copy()
+    pcol = PITCH_TYPE_COL
+
+    def _build(row):
+        return {
+            "pitch": str(row[pcol]),
+            "strike_pct": float(row["strike_pct"]) if pd.notna(row["strike_pct"]) else np.nan,
+            "whiff_pct": float(row["whiff_pct"]) if pd.notna(row["whiff_pct"]) else np.nan,
+            "contact_pct": float(row["contact_pct"]) if pd.notna(row["contact_pct"]) else np.nan,
+            "hard_contact_risk": float(row["hard_contact_risk"]) if pd.notna(row["hard_contact_risk"]) else np.nan,
+            "pitch_count": int(row["pitch_count"]),
+            "swing_count": int(row["swing_count"]),
+            "contact_count": int(row["contact_count"]),
+            "hard_contact_count": int(row["hard_contact_count"]),
+            "sample_warning": str(row["sample_warning"]),
+        }
+
+    # Best strike
+    tier = p[p["pitch_count"] >= PREDICTION_MIN_STRIKE_N]
+    if tier.empty: tier = p[p["pitch_count"] >= 6]
+    if tier.empty: tier = p
+    if not tier.empty:
+        best = tier.loc[tier["strike_pct"].idxmax()]
+        out["best_strike"] = {**_build(best), "coach_blurb": "Highest strike rate — a solid default when you need a strike."}
+
+    # Best putaway
+    tier = p[p["swing_count"] >= PREDICTION_MIN_SWINGS_PUTAWAY]
+    if tier.empty: tier = p[p["swing_count"] >= 4]
+    if tier.empty: tier = p
+    tier = tier[tier["swing_count"] > 0]
+    if not tier.empty:
+        tier = tier.assign(_wp=tier["whiff_pct"].fillna(0.0))
+        best = tier.loc[tier["_wp"].idxmax()]
+        out["best_putaway"] = {**_build(best), "coach_blurb": "Strongest whiff rate — lean on it in two-strike situations."}
+
+    # Caution
+    tier = p[p["contact_count"] >= PREDICTION_MIN_CONTACT_CAUTION]
+    if tier.empty: tier = p[p["contact_count"] >= 2]
+    tier = tier[tier["contact_count"] > 0]
+    tier = tier[pd.notna(tier["hard_contact_risk"])]
+    if not tier.empty and tier["hard_contact_count"].sum() > 0:
+        best = tier.loc[tier["hard_contact_risk"].idxmax()]
+        out["caution"] = {**_build(best), "coach_blurb": f"High share of hard contact (EV ≥ {int(PREDICTION_HARD_CONTACT_EV)} mph) — be selective with location."}
+    else:
+        out["caution"] = {"pitch": "—", "coach_blurb": "Not enough hard contact data to flag a caution pitch."}
+
+    return out
+
+
+def format_prediction_table_display(pred: pd.DataFrame, summary: dict) -> pd.DataFrame:
+    if pred is None or pred.empty:
+        return pd.DataFrame(columns=["Pitch", "Strike %", "Whiff %", "Contact %", "Hard Contact Risk", "Sample", "Recommendation"])
+    pcol = PITCH_TYPE_COL
+    bs = (summary.get("best_strike") or {}).get("pitch")
+    bp = (summary.get("best_putaway") or {}).get("pitch")
+    ca = (summary.get("caution") or {}).get("pitch")
+    recs = []
+    for _, row in pred.iterrows():
+        name = str(row[pcol])
+        tags = []
+        if bs and name == bs: tags.append("Best strike")
+        if bp and name == bp: tags.append("Best put-away")
+        if ca and name == ca and ca != "—": tags.append("Caution")
+        recs.append("; ".join(tags) if tags else "—")
+    return pd.DataFrame({
+        "Pitch": pred[pcol].astype(str),
+        "Strike %": pred["strike_pct"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+        "Whiff %": pred["whiff_pct"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+        "Contact %": pred["contact_pct"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+        "Hard Contact Risk": pred["hard_contact_risk"].map(lambda x: format_pct(x) if pd.notna(x) else "—"),
+        "Sample": pred["pitch_count"].astype(int),
+        "Sample Note": pred["sample_warning"].map(lambda s: s if str(s).strip() else "—"),
+        "Recommendation": recs,
+    })
+
+
+
 def get_pitcher_team_logo_text(team_code: str) -> str:
     if team_code == PURDUE_CODE:
         return "P"
     return "O"
 
 # ---------------------------------------------------------------------------
-# BigQuery: client, team dropdown (dim_team), global date bounds (fact_pitch)
+# Load csv metadata once
 # ---------------------------------------------------------------------------
-BQ_PROJECT = "softball-492603"
-_BQ_FACT_TABLE = f"`{BQ_PROJECT}.softball_curated.fact_pitch`"
-_BQ_DIM_TEAM = f"`{BQ_PROJECT}.softball_curated.dim_team`"
+csv_paths_with_dates, global_date_min, global_date_max = get_csv_paths_with_dates()
 
-try:
-    bq_client = bigquery.Client(
-        project=BQ_PROJECT,
-        client_options=ClientOptions(quota_project_id=BQ_PROJECT),
+# ---------------------------------------------------------------------------
+# Data-freshness stats (shown in sidebar so coaches know the data horizon).
+# ---------------------------------------------------------------------------
+def _compute_freshness_stats(rows):
+    total_games = len(rows)
+    unverified = sum(
+        1 for _, full, _, _ in rows
+        if "_unverified" in os.path.basename(full).lower()
     )
-except Exception:
-    bq_client = None
+    verified = total_games - unverified
+    latest = max((dmax for _, _, _, dmax in rows), default=None)
+    return {
+        "latest_date": latest,
+        "total_games": total_games,
+        "verified": verified,
+        "unverified": unverified,
+    }
+
+FRESHNESS_STATS = _compute_freshness_stats(csv_paths_with_dates)
 
 
-def _fetch_dim_team_choices() -> dict:
-    if bq_client is None:
-        return {
-            "": "— Run: gcloud auth application-default login —",
-        }
-    try:
-        sql = f"SELECT team_code, display_name FROM {_BQ_DIM_TEAM} ORDER BY display_name"
-        df = bq_client.query(sql).to_dataframe()
+def _build_master_df_from_csvs():
+    """Read every Trackman + Rapsodo CSV and concatenate. Slow path."""
+    dfs = []
+
+    # Load Trackman data
+    for rel, full, dmin, dmax in csv_paths_with_dates:
+        df = load_and_clean_csv(full)
+        if df is None or df.empty or "Date" not in df.columns:
+            continue
+
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df[df["Date"].notna()].copy()
         if df.empty:
-            return {"": "— No teams —"}
-        return dict(
-            zip(df["team_code"].astype(str).str.strip(), df["display_name"].astype(str))
-        )
-    except Exception:
-        return {"": "— BigQuery error —"}
+            continue
+
+        df["DateOnly"] = df["Date"].dt.date
+        df["DataSource"] = "trackman"
+        df = infer_session_type_for_purdue(df, filename=rel)
+
+        dfs.append(df)
+
+    # Load Rapsodo data
+    rapsodo_dir = os.path.join(APP_DIR, "data", "rapsodo")
+    if os.path.isdir(rapsodo_dir):
+        for fname in glob.glob(os.path.join(rapsodo_dir, "*.csv")):
+            df = load_rapsodo_csv(fname)
+            if df is None or df.empty or "Date" not in df.columns:
+                continue
+            df = df[df["Date"].notna()].copy()
+            if df.empty:
+                continue
+            df["DateOnly"] = df["Date"].dt.date
+            df["SessionType"] = "bullpen"
+            df["SessionTypeReason"] = "Rapsodo bullpen data"
+            dfs.append(df)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    master = pd.concat(dfs, ignore_index=True)
+
+    # Exclude Trackman test/demo data
+    EXCLUDE_TEAMS = {"TRA_TRA_SB", "TRA_TRA1_SB"}
+    for col in ["PitcherTeam", "BatterTeam"]:
+        if col in master.columns:
+            master = master[~master[col].astype(str).str.strip().isin(EXCLUDE_TEAMS)]
+
+    return master
 
 
-def _fetch_global_date_bounds():
-    if bq_client is None:
-        return None, None
+# ---------------------------------------------------------------------------
+# MASTER_DF pickle cache — avoids re-parsing every CSV on each server restart.
+# Invalidates when any data folder's modification time changes (files added /
+# removed / replaced). Coaches can force a rebuild by deleting the cache file
+# or touching the v3/ folder.
+# ---------------------------------------------------------------------------
+MASTER_CACHE_PATH = os.path.join(APP_DIR, ".master_df_cache.pkl")
+MASTER_CACHE_META_PATH = os.path.join(APP_DIR, ".master_df_cache.meta.json")
+
+
+def _dir_mtime(path):
+    """Max mtime across a directory tree (cheap: top-level only, like _data_dir_mtime)."""
+    if not os.path.isdir(path):
+        return 0
     try:
-        sql = f"SELECT MIN(date_only) AS dmin, MAX(date_only) AS dmax FROM {_BQ_FACT_TABLE}"
-        df = bq_client.query(sql).to_dataframe()
-        row = df.iloc[0]
-        dmin, dmax = row["dmin"], row["dmax"]
-        if pd.isna(dmin) or pd.isna(dmax):
-            return None, None
-        if hasattr(dmin, "date"):
-            dmin = dmin.date()
-        if hasattr(dmax, "date"):
-            dmax = dmax.date()
-        return dmin, dmax
+        t = os.path.getmtime(path)
+        for e in os.listdir(path):
+            t = max(t, os.path.getmtime(os.path.join(path, e)))
+        return t
     except Exception:
-        return None, None
+        return 0
 
 
-DIM_TEAM_CHOICES = _fetch_dim_team_choices()
-DIM_TEAM_DEFAULT = (
-    PURDUE_CODE
-    if PURDUE_CODE in DIM_TEAM_CHOICES
-    else (next(iter(DIM_TEAM_CHOICES)) if DIM_TEAM_CHOICES else "")
-)
+def _master_fingerprint():
+    """Signature that invalidates cache when any source folder changes."""
+    return {
+        "v3": _data_dir_mtime(),
+        "rapsodo": _dir_mtime(os.path.join(APP_DIR, "data", "rapsodo")),
+        "version": 1,  # bump if schema changes
+    }
 
-global_date_min, global_date_max = _fetch_global_date_bounds()
 
-DEFAULT_SEASON = "spring_2026"
+def build_master_df():
+    """Load MASTER_DF from pickle cache when possible; rebuild from CSVs otherwise."""
+    fp_now = _master_fingerprint()
 
-SEASON_DATE_MAP = {
-    "spring_2026": (date(2026, 1, 1), date(2026, 6, 30)),
-}
+    # Try cache
+    if os.path.isfile(MASTER_CACHE_PATH) and os.path.isfile(MASTER_CACHE_META_PATH):
+        try:
+            with open(MASTER_CACHE_META_PATH, "r") as f:
+                fp_cached = json.load(f)
+            if fp_cached == fp_now:
+                return pd.read_pickle(MASTER_CACHE_PATH)
+        except Exception:
+            pass  # fall through to rebuild
+
+    # Cache miss or stale — rebuild
+    master = _build_master_df_from_csvs()
+
+    # Save cache (best effort; if it fails, app still works, next start just rebuilds)
+    try:
+        master.to_pickle(MASTER_CACHE_PATH)
+        with open(MASTER_CACHE_META_PATH, "w") as f:
+            json.dump(fp_now, f)
+    except Exception:
+        pass
+
+    return master
+
+
+MASTER_DF = build_master_df()
+
+# Precompute per-source slices once at startup so current_df() doesn't have to
+# re-filter MASTER_DF by DataSource on every reactive invalidation.
+def _build_source_slices(master):
+    if master is None or master.empty or "DataSource" not in master.columns:
+        return {"trackman": master, "rapsodo": master, "collective": master}
+    return {
+        "trackman": master[master["DataSource"] == "trackman"].reset_index(drop=True),
+        "rapsodo":  master[master["DataSource"] == "rapsodo"].reset_index(drop=True),
+        "collective": master,  # no filter
+    }
+SOURCE_SLICES = _build_source_slices(MASTER_DF)
+
+
 
 def clamp_date_range(start, end, global_min, global_max):
     if global_min is None or global_max is None:
@@ -1095,660 +1246,11 @@ _date_start_value, _date_end_value = get_initial_date_range(DEFAULT_SEASON)
 # UI (Sketch Layout + Purdue Header)
 # ---------------------------------------------------------------------------
 app_ui = ui.page_fluid(
-    ui.tags.style("""
-        html, body {
-            width: 100%;
-            margin: 0;
-            padding: 0;
-            overflow-x: hidden;
-            font-family: Arial, sans-serif;
-            background-color: #f3f3f3;
-        }
-
-        .container-fluid {
-            width: 100% !important;
-            max-width: 100% !important;
-            padding-left: 0 !important;
-            padding-right: 0 !important;
-            margin-left: 0 !important;
-            margin-right: 0 !important;
-        }
-
-        .top-header {
-            width: 100%;
-            margin: 0;
-            min-width: 100%;
-            background-color: #000000;
-            border-bottom: 6px solid #DDB945;
-            box-sizing: border-box;
-        }
-
-        .sidebar .shiny-input-container,
-        .sidebar .filter-title {
-            font-weight: 900 !important;
-        }
-
-        .sidebar .shiny-input-container .form-check label.form-check-label {
-            font-weight: 400 !important;
-        }
-
-        .top-header {
-            width: 100%;
-            margin: 0;
-            min-width: 100%;
-            background-color: #000000;
-            border-bottom: 6px solid #DDB945;
-            box-sizing: border-box;
-        }
-
-        .header-inner {
-            width: 100%;
-            display: grid;
-            grid-template-columns: 260px 1fr;
-            align-items: center;
-            padding: 8px 20px;
-            box-sizing: border-box;
-        }
-
-        .header-left {
-            display: flex;
-            align-items: center;
-            justify-content: flex-start;
-            padding-left: 18px;
-            box-sizing: border-box;
-        }
-
-        .header-left img {
-            height: 40px;
-            width: auto;
-            display: block;
-        }
-
-        .header-title {
-            text-align: center;
-            color: #DDB945;
-            font-size: 46px;
-            font-weight: 900;
-            letter-spacing: 0.5px;
-            box-sizing: border-box;
-        }
-
-        .header-right {
-            display: none;
-        }
-
-        .layout-main {
-            display: flex;
-            width: 100%;
-            min-height: calc(100vh - 64px);
-        }
-
-        .sidebar {
-            width: 260px;
-            background-color: #ffffff;
-            border-right: 1px solid #d6d6d6;
-            padding: 16px 16px 20px 16px;
-            box-sizing: border-box;
-        }
-
-        .sidebar h4 {
-            margin: 0 0 12px 0;
-            font-size: 24px;
-            font-weight: 900;
-            text-align: center;
-        }
-
-        .main-area {
-            flex: 1;
-            padding: 16px 20px 22px 20px;
-            box-sizing: border-box;
-            overflow-x: auto;
-        }
-
-        .tabs-wrap .nav-tabs {
-            border-bottom: 1px solid #d6d6d6;
-            background: #ffffff;
-            padding: 8px 10px 0 10px;
-            border-radius: 10px 10px 0 0;
-        }
-
-        .tabs-wrap .nav-tabs .nav-link {
-            border: none;
-            color: #111111;
-            font-weight: 900;
-            padding: 10px 18px;
-            margin-right: 10px;
-            background: transparent;
-        }
-
-        .tabs-wrap .nav-tabs .nav-link.active {
-            color: #111111;
-            position: relative;
-        }
-
-        .tabs-wrap .nav-tabs .nav-link.active::after {
-            content: "";
-            position: absolute;
-            left: 12px;
-            right: 12px;
-            bottom: -1px;
-            height: 3px;
-            background: #DDB945;
-        }
-
-        .panel {
-            background: #ffffff;
-            border: 1px solid #d6d6d6;
-            border-top: none;
-            border-radius: 0 0 10px 10px;
-            padding: 16px 16px 18px 16px;
-            min-height: calc(100vh - 140px);
-            overflow-y: auto;
-            overflow-x: visible;
-            height: auto;
-        }
-
-        .profile-title {
-            font-size: 24px;
-            font-weight: 900;
-            margin: 0 0 10px 0;
-            text-align: center;
-        }
-
-        .player-summary {
-            font-size: 20px;
-            font-weight: 800;
-            color: #333333;
-            margin: 0 0 14px 0;
-            text-align: center;
-        }
-
-        .grid-2x2 {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-        }
-
-        .card {
-            background: #f7f7f7;
-            border: 1px solid #d6d6d6;
-            border-radius: 10px;
-            padding: 10px;
-            overflow: visible;
-        }
-
-        .card-fixed {
-            min-height: 420px;
-        }
-
-        .legend-row{
-            display:flex;
-            flex-wrap:wrap;
-            gap:14px;
-            justify-content:center;
-            align-items:center;
-            margin: 8px 0 14px 0;
-            padding: 8px 14px;
-            border: 1px solid rgba(0,0,0,0.15);
-            border-radius: 8px;
-            background: #fff;
-            font-size: 13px;
-        }
-
-        /* Date range labelless */
-        .date-range-row label {
-            display: none !important;
-        }
-
-        /* Stat header tooltip icon */
-        .stat-tip {
-            cursor: help;
-        }
-        .stat-tip .tip-icon {
-            display: inline-block;
-            width: 13px; height: 13px;
-            border-radius: 50%;
-            background: rgba(205,167,53,0.3);
-            color: #CDA735;
-            font-size: 9px; font-weight: 700;
-            line-height: 13px; text-align: center;
-            margin-left: 3px; vertical-align: middle;
-        }
-        /* Floating tooltip (appended to body) */
-        .stat-tip-popup {
-            position: fixed;
-            background: #2d2d2d; color: #f0f0f0;
-            padding: 10px 14px;
-            border-radius: 6px;
-            font-size: 11px; font-weight: 400;
-            line-height: 1.5; width: 220px;
-            text-align: left; z-index: 99999;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-            white-space: normal;
-            pointer-events: none;
-        }
-        .stat-tip-popup::before {
-            content: '';
-            position: absolute; top: -6px;
-            left: 50%; transform: translateX(-50%);
-            border-left: 6px solid transparent;
-            border-right: 6px solid transparent;
-            border-bottom: 6px solid #2d2d2d;
-        }
-        .stat-tip-popup .tip-title {
-            font-weight: 700; font-size: 12px;
-            color: #CDA735; margin-bottom: 4px;
-        }
-        .stat-tip-popup .tip-scale {
-            margin-top: 6px; font-size: 10px; color: #aaa;
-        }
-
-        .usage-table-wrap {
-            width: 100%;
-            max-width: 100%;
-            overflow-x: auto !important;
-            overflow-y: hidden !important;
-            display: block;
-            -webkit-overflow-scrolling: touch;
-            padding-bottom: 6px;
-        }
-
-        .usage-table-wrap > div,
-        .usage-table-wrap .table-responsive,
-        .usage-table-wrap .dataframe_container {
-            display: block;
-            width: 100%;
-        }
-
-        .usage-table-wrap table,
-        .usage-table-wrap .dataframe {
-            width: 100% !important;
-            min-width: 100% !important;
-            border-collapse: collapse !important;
-            table-layout: auto !important;
-            white-space: nowrap;
-        }
-
-        /* Header */
-        .usage-table-wrap thead th {
-            background: #111 !important;
-            color: #fff !important;
-            font-weight: 800 !important;
-            border: 1px solid #444 !important;
-        }
-
-        /* Body cells */
-        .usage-table-wrap tbody td {
-            border: 1px solid #cfcfcf !important;
-            color: #111 !important;
-        }
-
-        /* Zebra striping */
-        .usage-table-wrap tbody tr:nth-child(odd) td {
-            background: #f3f3f3 !important;
-        }
-
-        .usage-table-wrap tbody tr:nth-child(even) td {
-            background: #ffffff !important;
-        }
-
-        /* Cell formatting */
-        .usage-table-wrap th,
-        .usage-table-wrap td {
-            padding: 4px 6px;
-            font-size: 12px;
-            text-align: right;
-        }
-
-        /* First column */
-        .usage-table-wrap th:first-child,
-        .usage-table-wrap td:first-child {
-            text-align: left;
-            min-width: 140px;
-            padding-right: 6px;
-        }
-
-        /* All other columns */
-        .usage-table-wrap th:not(:first-child),
-        .usage-table-wrap td:not(:first-child) {
-            text-align: right;
-            min-width: 88px;
-        }
-
-        /* Slightly wider metrics */
-        .usage-table-wrap th:nth-child(7),
-        .usage-table-wrap td:nth-child(7),
-        .usage-table-wrap th:nth-child(8),
-        .usage-table-wrap td:nth-child(8),
-        .usage-table-wrap th:nth-child(9),
-        .usage-table-wrap td:nth-child(9),
-        .usage-table-wrap th:nth-child(10),
-        .usage-table-wrap td:nth-child(10) {
-            min-width: 95px;
-        }
-
-        .table-title {
-            font-size: 16px;
-            font-weight: 900;
-            margin: 6px 0 10px 0;
-            text-align: center;
-        }
-
-        /* ---------------- Comparison tab ---------------- */
-        .cmp-filter-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 10px;
-            margin-bottom: 14px;
-            align-items: end;
-            max-width: 1500px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .cmp-filter-row .shiny-input-container {
-            margin-bottom: 0 !important;
-        }
-
-        .cmp-filter-row .shiny-input-container > label {
-            margin-bottom: 6px;
-            font-weight: 800;
-        }
-
-        .cmp-vs-title {
-            font-size: 26px;
-            font-weight: 900;
-            text-align: center;
-            margin: 6px 0 16px 0;
-            color: #222222;
-        }
-
-        .cmp-summary-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-            margin-bottom: 14px;
-        }
-
-        .cmp-card {
-            background: #ffffff;
-            border: 1px solid #d6d6d6;
-            border-radius: 12px;
-            padding: 16px 18px;
-        }
-
-        .cmp-card-header {
-            display: flex;
-            align-items: flex-start;
-            gap: 12px;
-            margin-bottom: 12px;
-        }
-
-        .cmp-card-logo {
-            width: 54px;
-            height: 54px;
-            min-width: 54px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 10px;
-            background: #f7f7f7;
-            border: 1px solid #ececec;
-            font-size: 24px;
-            font-weight: 900;
-            color: #DDB945;
-        }
-
-        .cmp-card-name {
-            font-size: 18px;
-            font-weight: 900;
-            margin: 0;
-            color: #222222;
-        }
-
-        .cmp-card-subtitle {
-            font-size: 13px;
-            color: #666666;
-            margin-top: 2px;
-        }
-
-        .cmp-chip-row {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin: 10px 0 14px 0;
-        }
-
-        .cmp-chip {
-            background: #f3f3f3;
-            border: 1px solid #e0e0e0;
-            border-radius: 999px;
-            padding: 6px 12px;
-            font-size: 13px;
-            font-weight: 700;
-            color: #333333;
-        }
-
-        .cmp-stat-strip {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr;
-            gap: 0;
-            background: #f7f7f7;
-            border: 1px solid #e1e1e1;
-            border-radius: 12px;
-        }
-
-        .cmp-stat-box {
-            padding: 12px 10px;
-            text-align: center;
-            border-right: 1px solid #e1e1e1;
-        }
-
-        .cmp-stat-box:last-child {
-            border-right: none;
-        }
-
-        .cmp-stat-label {
-            font-size: 13px;
-            color: #666666;
-            margin-bottom: 6px;
-            font-weight: 700;
-        }
-
-        .cmp-stat-value {
-            font-size: 18px;
-            font-weight: 900;
-            color: #222222;
-        }
-
-        .cmp-table-card {
-            background: #ffffff;
-            border: 1px solid #d6d6d6;
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 14px;
-        }
-
-        .cmp-grid-bottom {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-        }
-
-        .cmp-plot-card {
-            background: #ffffff;
-            border: 1px solid #d6d6d6;
-            border-radius: 12px;
-            padding: 10px;
-        }
-
-        .cmp-section-title {
-            font-size: 16px;
-            font-weight: 900;
-            color: #222222;
-            margin: 0 0 10px 4px;
-            letter-spacing: 0.2px;
-        }
-
-        .cmp-table-wrap table,
-        .cmp-table-wrap thead,
-        .cmp-table-wrap tbody,
-        .cmp-table-wrap tr,
-        .cmp-table-wrap th,
-        .cmp-table-wrap td,
-        .cmp-table-wrap table.table,
-        .cmp-table-wrap .table,
-        .cmp-table-wrap .table > :not(caption) > * > * {
-            background-color: transparent !important;
-        }
-
-        .cmp-table-wrap table {
-            width: 100% !important;
-            border-collapse: collapse !important;
-            table-layout: fixed !important;
-        }
-
-        .cmp-table-wrap table.table thead th,
-        .cmp-table-wrap .table thead th {
-            background: #111 !important;
-            color: #fff !important;
-            font-weight: 800 !important;
-            border: 1px solid #444 !important;
-            border-bottom: 2px solid #444 !important;
-            text-align: center !important;
-            white-space: normal !important;
-            line-height: 1.2 !important;
-        }
-
-        .cmp-table-wrap tbody td {
-            border: 1px solid #cfcfcf !important;
-            color: #111 !important;
-            font-size: 13px !important;
-            padding: 8px 8px !important;
-        }
-
-        .cmp-table-wrap tbody tr:nth-child(odd) td {
-            background: #f7f7f7 !important;
-        }
-
-        .cmp-table-wrap tbody tr:nth-child(even) td {
-            background: #ffffff !important;
-        }
-
-        .cmp-table-wrap th:nth-child(1),
-        .cmp-table-wrap td:nth-child(1) {
-            text-align: left !important;
-            width: 34%;
-        }
-
-        .cmp-table-wrap th:nth-child(2),
-        .cmp-table-wrap td:nth-child(2),
-        .cmp-table-wrap th:nth-child(3),
-        .cmp-table-wrap td:nth-child(3) {
-            text-align: center !important;
-            width: 33%;
-        }
-
-        /* ---------------- Team summary table ---------------- */
-        .team-summary-wrap{
-            margin-top: 14px;
-            margin-bottom: 18px;
-            background: #ffffff;
-            border: 1px solid #d9d9d9;
-            border-radius: 10px;
-            overflow: auto;
-            height: auto;
-        }
-
-        .team-summary-title{
-            font-size: 20px;
-            font-weight: 700;
-            text-align: center;
-            padding: 10px 12px;
-            background: #f7f7f7;
-            border-bottom: 1px solid #d9d9d9;
-            color: #111111;
-        }
-
-        .team-summary-table{
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
-
-        .team-summary-table th,
-        .team-summary-table td{
-            border: 1px solid #d9d9d9;
-            padding: 10px 12px;
-            text-align: center;
-            font-size: 16px;
-        }
-
-        .team-summary-table th{
-            font-weight: 700;
-            background: #f3f3f3;
-            white-space: nowrap;
-        }
-
-        .team-summary-table th:first-child,
-        .team-summary-table td:first-child{
-            text-align: left;
-            font-weight: 700;
-            width: 140px;
-        }
-
-        .team-summary-table th:nth-child(2){width: 140px;}
-        .team-summary-table th:nth-child(3){width: 140px;}
-        .team-summary-table th:nth-child(4){width: 140px;}
-        .team-summary-table th:nth-child(5){width: 140px;}
-
-        .team-summary-purdue{
-            background: #f8f5e6 !important;
-        }
-
-        .team-summary-opponent{
-            background: #f8f8f8 !important;
-        }
-
-        /* ---- Batter profile ---- */
-        .bat-line-wrap {
-            background: #ffffff;
-            border: 1px solid #d6d6d6;
-            border-radius: 10px;
-            overflow-x: auto;
-            margin-bottom: 14px;
-        }
-        .bat-line-wrap table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-            min-width: 600px;
-        }
-        .bat-line-wrap thead th {
-            background: #111111 !important;
-            color: #ffffff !important;
-            font-size: 13px !important;
-            font-weight: 800 !important;
-            text-align: center !important;
-            padding: 8px 4px !important;
-            border: 1px solid #333 !important;
-        }
-        .bat-line-wrap tbody td {
-            font-size: 14px;
-            font-weight: 600;
-            text-align: center;
-            padding: 10px 4px;
-            border: 1px solid #e0e0e0;
-            color: #111111;
-        }
-        .bat-line-wrap tbody td.bat-hl   { color: #185FA5; }
-        .bat-line-wrap tbody td.bat-good { color: #0F6E56; }
-        .bat-line-wrap tbody td.bat-warn { color: #854F0B; }
-        .bat-line-wrap tbody tr:nth-child(odd) td  { background: #f7f7f7; }
-        .bat-line-wrap tbody tr:nth-child(even) td { background: #ffffff; }
-
-        
-    """),
+    # Preload Plotly.js so charts render on first load (not after a re-render)
+    ui.tags.head(
+        ui.tags.script(src="https://cdn.plot.ly/plotly-2.35.2.min.js"),
+    ),
+    ui.tags.link(rel="stylesheet", href="dashboard.css"),
 
     # Purdue header (logo left, title centered)
     ui.tags.div(
@@ -1801,11 +1303,16 @@ app_ui = ui.page_fluid(
                 selected="trackman",
             ),
 
-            ui.input_select(
+            ui.input_selectize(
                 "team",
                 "Team Name",
-                choices=DIM_TEAM_CHOICES,
-                selected=DIM_TEAM_DEFAULT,
+                choices={},
+                selected=PURDUE_CODE,
+                options={
+                    "placeholder": "Search team name...",
+                    "maxOptions": 300,
+                    "openOnFocus": True,
+                },
             ),
             ui.input_select(
                 "session_type",
@@ -1845,6 +1352,107 @@ app_ui = ui.page_fluid(
             class_="main-area",
         ),
 
+        # Chart expand modal
+        ui.tags.div(
+            ui.tags.div(
+                ui.tags.span("×", class_="chart-modal-close", onclick="closeChartModal()"),
+                ui.tags.div("", class_="chart-modal-title", id="chart-modal-title"),
+                ui.tags.div(id="chart-modal-body", style="width:100%;height:calc(100% - 50px);overflow:hidden;"),
+                class_="chart-modal-content",
+            ),
+            class_="chart-modal-overlay",
+            id="chart-modal-overlay",
+            onclick="if(event.target===this)closeChartModal()",
+        ),
+
+        ui.tags.script(ui.HTML("""
+        function expandChart(title, sourceId) {
+            var src = document.getElementById(sourceId);
+            if (!src) return;
+            var overlay = document.getElementById('chart-modal-overlay');
+            var body = document.getElementById('chart-modal-body');
+            var titleEl = document.getElementById('chart-modal-title');
+            titleEl.textContent = title;
+            body.innerHTML = '';
+
+            // Check for plotly chart
+            var plotlyDiv = src.querySelector('.js-plotly-plot');
+            if (plotlyDiv && window.Plotly) {
+                // Show modal first so dimensions are available
+                overlay.classList.add('active');
+                var newDiv = document.createElement('div');
+                newDiv.style.width = '100%';
+                newDiv.style.height = '100%';
+                body.appendChild(newDiv);
+                var data = JSON.parse(JSON.stringify(plotlyDiv.data));
+                var layout = JSON.parse(JSON.stringify(plotlyDiv.layout));
+                // Use actual rendered dimensions after modal is visible
+                setTimeout(function() {
+                    layout.width = body.offsetWidth;
+                    layout.height = body.offsetHeight;
+                    layout.margin = {l:60, r:30, t:10, b:60};
+                    layout.autosize = false;
+                    Plotly.newPlot(newDiv, data, layout, {
+                        displayModeBar: true,
+                        displaylogo: false,
+                        scrollZoom: true,
+                        modeBarButtonsToRemove: ['toImage','select2d','lasso2d',
+                            'hoverClosestCartesian','hoverCompareCartesian','toggleSpikelines']
+                    });
+                }, 50);
+                return;  // already showed overlay above
+            } else {
+                // Matplotlib — clone image and scale to fill modal
+                overlay.classList.add('active');
+                setTimeout(function() {
+                    body.innerHTML = '';
+                    body.style.display = 'flex';
+                    body.style.flexDirection = 'column';
+                    body.style.justifyContent = 'center';
+                    body.style.alignItems = 'center';
+                    body.style.overflow = 'hidden';
+                    body.style.background = '#f7f7f7';
+
+                    // If expanding pie chart, add the pitch legend at top
+                    if (sourceId === 'pie') {
+                        var legend = document.getElementById('movement_legend');
+                        if (legend) {
+                            var legendClone = legend.cloneNode(true);
+                            legendClone.style.marginBottom = '10px';
+                            legendClone.style.flexShrink = '0';
+                            body.appendChild(legendClone);
+                        }
+                    }
+
+                    var img = src.querySelector('img');
+                    if (img) {
+                        var newImg = img.cloneNode(true);
+                        newImg.style.height = 'calc(100% - 50px)';
+                        newImg.style.width = 'auto';
+                        newImg.style.maxWidth = '100%';
+                        newImg.style.objectFit = 'contain';
+                        newImg.style.flexShrink = '1';
+                        body.appendChild(newImg);
+                    } else {
+                        body.innerHTML = src.innerHTML;
+                    }
+                }, 50);
+                return;
+            }
+        }
+        function closeChartModal() {
+            var body = document.getElementById('chart-modal-body');
+            // Clean up plotly to avoid memory leaks
+            var plots = body.querySelectorAll('.js-plotly-plot');
+            plots.forEach(function(p) { if(window.Plotly) Plotly.purge(p); });
+            document.getElementById('chart-modal-overlay').classList.remove('active');
+            body.innerHTML = '';
+        }
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeChartModal();
+        });
+        """)),
+
         ui.tags.script(ui.HTML("""
         var STAT_TIPS = {
             'BA': {title:'Batting Average', desc:'Hits divided by at-bats. The classic measure of hitting ability.'},
@@ -1853,7 +1461,8 @@ app_ui = ui.page_fluid(
             'OPS': {title:'On-Base Plus Slugging', desc:'OBP + SLG combined. Quick overall offensive value measure.'},
             'wOBA': {title:'Weighted On-Base Average', desc:'Values all ways of reaching base by their actual run value. Most accurate single hitting stat.'},
             '__passive__': {title:'Passive Hitters', desc:'Batters whose overall swing rate is below the median of all batters in the current dataset (min 10 pitches seen).'},
-            '__aggressive__': {title:'Aggressive Hitters', desc:'Batters whose overall swing rate is above the median of all batters in the current dataset (min 10 pitches seen).'}
+            '__aggressive__': {title:'Aggressive Hitters', desc:'Batters whose overall swing rate is above the median of all batters in the current dataset (min 10 pitches seen).'},
+            '__out_rate__': {title:'Out Rate by Zone', desc:'Outs (balls in play + strikeouts) divided by plate appearances ending with a pitch in that zone. Shows where the batter is most vulnerable.'}
         };
         var _tipPopup = null;
         function _showTip(e) {
@@ -1909,34 +1518,8 @@ app_ui = ui.page_fluid(
 # ---------------------------------------------------------------------------
 def server(input, output, session):
     selected_pitch = reactive.Value("")
+    selected_hittrax_session = reactive.Value("")  # ISO date string of selected session, or ""
     updating_dates_from_season = reactive.Value(False)
-
-    @reactive.calc
-    def bq_fact_pitch_df():
-        team = input.team()
-        start = input.date_start()
-        end = input.date_end()
-        if bq_client is None or not team or start is None or end is None or start > end:
-            return pd.DataFrame()
-        try:
-            job_config = bigquery.QueryJobConfig(
-                query_parameters=[
-                    bigquery.ScalarQueryParameter("team", "STRING", str(team)),
-                    bigquery.ScalarQueryParameter("start", "DATE", start),
-                    bigquery.ScalarQueryParameter("end", "DATE", end),
-                ]
-            )
-            sql = f"""
-            SELECT *
-            FROM {_BQ_FACT_TABLE}
-            WHERE (PitcherTeam = @team OR BatterTeam = @team)
-              AND date_only BETWEEN @start AND @end
-            """
-            job = bq_client.query(sql, job_config=job_config)
-            df = job.to_dataframe()
-        except Exception:
-            return pd.DataFrame()
-        return normalize_fact_pitch_df(df)
 
     @reactive.calc
     def date_range_invalid():
@@ -1948,13 +1531,15 @@ def server(input, output, session):
         start = input.date_start()
         end = input.date_end()
 
-        if start is None or end is None:
+        if start is None or end is None or not csv_paths_with_dates:
             return False
         if start > end:
             return False
-        if global_date_min is None or global_date_max is None:
-            return False
-        return start <= global_date_max and end >= global_date_min
+
+        for _, _, dmin, dmax in csv_paths_with_dates:
+            if dmin <= end and dmax >= start:
+                return True
+        return False
 
     @reactive.effect
     def _update_dates_from_season():
@@ -2082,30 +1667,27 @@ def server(input, output, session):
             return None
         if start > end:
             return None
-        master = bq_fact_pitch_df()
-        if master.empty:
+        if MASTER_DF.empty:
             return None
 
-        df = master
-        if "DateOnly" in df.columns:
-            df = df[
-                (df["DateOnly"] >= start) &
-                (df["DateOnly"] <= end)
-            ]
-
-        # Filter by data source
+        # Use pre-filtered source slice so we only pay the date-range filter cost
         src = input.data_source()
-        if "DataSource" in df.columns:
-            if src in ("trackman", "rapsodo"):
-                df = df[df["DataSource"] == src]
-            # "collective" = show all sources (no filter)
+        base = SOURCE_SLICES.get(src, MASTER_DF) if src in SOURCE_SLICES else MASTER_DF
+
+        if base is None or base.empty:
+            return base
+
+        df = base[
+            (base["DateOnly"] >= start) &
+            (base["DateOnly"] <= end)
+        ]
 
         return df
 
     @reactive.effect
     def _warn_unsupported_source():
         src = input.data_source()
-        if src not in ("trackman", "rapsodo", "collective"):
+        if src not in ("trackman", "rapsodo", "collective", "hittrax"):
             ui.notification_show(
                 f"'{input.data_source()}' data is not yet available.",
                 type="warning",
@@ -2121,6 +1703,14 @@ def server(input, output, session):
                 session=session,
             )
             ui.update_radio_buttons("player_type", selected="pitcher", session=session)
+        elif src == "hittrax":
+            # HitTrax is batting practice only, batter profile only
+            ui.update_select(
+                "session_type",
+                choices={"batting_practice": "Batting Practice"},
+                selected="batting_practice",
+                session=session,
+            )
         else:
             # Trackman or Collective — restore full session type choices
             ui.update_select(
@@ -2136,6 +1726,42 @@ def server(input, output, session):
             )
 
     @reactive.effect
+    def _update_team_choices():
+        src = input.data_source()
+        if src == "hittrax":
+            # HitTrax is Purdue-only
+            ui.update_selectize(
+                "team",
+                choices={PURDUE_CODE: TEAM_NAME_MAP.get(PURDUE_CODE, PURDUE_CODE)},
+                selected=PURDUE_CODE,
+                session=session,
+            )
+            return
+
+        df = current_df()
+        if df is None or df.empty:
+            ui.update_selectize("team", choices={}, session=session)
+            return
+
+        teams = set()
+        for col in ["PitcherTeam", "BatterTeam"]:
+            if col in df.columns:
+                # .unique() is much faster than .tolist() on large columns
+                vals = df[col].dropna().astype(str).str.strip().unique()
+                teams.update(v for v in vals if v)
+
+        teams = sorted(teams)
+        choices = {t: TEAM_NAME_MAP.get(t, t) for t in teams}
+        choices = dict(sorted(choices.items(), key=lambda x: x[1]))
+        default_team = PURDUE_CODE if PURDUE_CODE in teams else (teams[0] if teams else None)
+        ui.update_selectize(
+            "team",
+            choices=choices,
+            selected=default_team,
+            session=session,
+        )
+
+    @reactive.effect
     def _force_session_all_for_non_purdue():
         team = input.team()
         if team and not is_purdue_team(team):
@@ -2143,6 +1769,28 @@ def server(input, output, session):
 
     @reactive.effect
     def _update_player_choices():
+        src = input.data_source()
+        if src == "hittrax":
+            # HitTrax: populate from HITTRAX_DF by player name (used as id)
+            if HITTRAX_DF.empty:
+                ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
+                return
+            start = input.date_start()
+            end = input.date_end()
+            hdf = HITTRAX_DF
+            if start is not None and end is not None:
+                hdf = hdf[(hdf["DateOnly"] >= start) & (hdf["DateOnly"] <= end)]
+            names = sorted(hdf["Player"].dropna().unique().tolist())
+            choices = {n: format_display_name(n) or n for n in names}
+            ui.update_select(
+                "player",
+                choices=choices if choices else {"": "—"},
+                label="Player Name",
+                selected=list(choices.keys())[0] if choices else None,
+                session=session,
+            )
+            return
+
         df = current_df()
         team = input.team()
         ptype = input.player_type()
@@ -2320,31 +1968,82 @@ def server(input, output, session):
 
     @reactive.calc
     def batter_percentile_thresholds():
-        """Compute percentile thresholds for BA/OBP/SLG/OPS/wOBA across all batters in dataset."""
+        """Compute percentile thresholds for BA/OBP/SLG/OPS/wOBA across all batters.
+
+        Vectorized with groupby for speed — previously a Python for-loop over
+        every BatterId, which dominated load time when changing Data Source.
+        """
         df = current_df()
         if df is None or df.empty or "BatterId" not in df.columns:
             return {}
 
         MIN_PA = 10
-        all_bids = df["BatterId"].dropna().unique()
-        stats_list = []
-        for bid in all_bids:
-            bd = df[df["BatterId"] == bid]
-            s = compute_batter_stats(bd, bid)
-            if s["PA"] < MIN_PA:
-                continue
-            stats_list.append({
-                "BA": s["BA"], "OBP": s["OBP"], "SLG": s["SLG"],
-                "OPS": s["OPS"], "wOBA": s["wOBA"],
-            })
+        TERMINAL = {"Single","Double","Triple","HomeRun","Out","FieldersChoice",
+                    "Error","Walk","Strikeout","HitByPitch","SacrificeFly",
+                    "SacrificeBunt","Sacrifice","CatcherInterference"}
 
-        if len(stats_list) < 5:
+        # Work on a minimal projection
+        cols_needed = ["BatterId", "PlayResult", "PitchCall", "PitchofPA"]
+        cols_present = [c for c in cols_needed if c in df.columns]
+        d = df[cols_present].copy()
+        d["BatterId"] = d["BatterId"].astype(str)
+
+        pr = d["PlayResult"].astype(str).str.strip() if "PlayResult" in d.columns else pd.Series("", index=d.index)
+        pc = d["PitchCall"].astype(str).str.strip()  if "PitchCall"  in d.columns else pd.Series("", index=d.index)
+        d["is_terminal"] = pr.isin(TERMINAL) | pc.eq("HitByPitch")
+
+        # PA count per batter — prefer PitchofPA == 1 if available
+        if "PitchofPA" in d.columns:
+            pop = pd.to_numeric(d["PitchofPA"], errors="coerce")
+            d["is_pa"] = (pop == 1)
+            pa_counts = d.groupby("BatterId")["is_pa"].sum().astype(int)
+        else:
+            pa_counts = d.groupby("BatterId")["is_terminal"].sum().astype(int)
+
+        eligible = pa_counts[pa_counts >= MIN_PA].index
+        if len(eligible) < 5:
             return {}
 
-        sdf = pd.DataFrame(stats_list)
+        # Filter to eligible batters + terminal rows only (for hit counting)
+        td = d[d["BatterId"].isin(eligible) & d["is_terminal"]].copy()
+        td_pr = td["PlayResult"].astype(str).str.strip() if "PlayResult" in td.columns else pd.Series("", index=td.index)
+        td_pc = td["PitchCall"].astype(str).str.strip()  if "PitchCall"  in td.columns else pd.Series("", index=td.index)
+
+        td["Single"]  = td_pr.eq("Single")
+        td["Double"]  = td_pr.eq("Double")
+        td["Triple"]  = td_pr.eq("Triple")
+        td["HR"]      = td_pr.eq("HomeRun")
+        td["BB"]      = td_pr.eq("Walk")
+        td["K"]       = td_pr.eq("Strikeout")
+        td["HBP"]     = td_pr.eq("HitByPitch") | td_pc.eq("HitByPitch")
+
+        agg = td.groupby("BatterId")[
+            ["Single", "Double", "Triple", "HR", "BB", "K", "HBP"]
+        ].sum().astype(int)
+
+        # Align PA
+        agg["PA"] = pa_counts.reindex(agg.index).fillna(0).astype(int)
+        agg["H"]  = agg["Single"] + agg["Double"] + agg["Triple"] + agg["HR"]
+        agg["AB"] = (agg["PA"] - agg["BB"] - agg["HBP"]).clip(lower=0)
+        agg["TB"] = agg["Single"] + 2*agg["Double"] + 3*agg["Triple"] + 4*agg["HR"]
+
+        # Drop batters with 0 AB (we want rate stats)
+        agg = agg[agg["AB"] > 0]
+        if len(agg) < 5:
+            return {}
+
+        agg["BA"]  = agg["H"] / agg["AB"]
+        agg["OBP"] = (agg["H"] + agg["BB"] + agg["HBP"]) / agg["PA"]
+        agg["SLG"] = agg["TB"] / agg["AB"]
+        agg["OPS"] = agg["OBP"] + agg["SLG"]
+        agg["wOBA"] = (
+            0.690*agg["BB"] + 0.720*agg["HBP"] + 0.880*agg["Single"]
+            + 1.242*agg["Double"] + 1.569*agg["Triple"] + 2.007*agg["HR"]
+        ) / agg["PA"]
+
         thresholds = {}
         for col in ["BA", "OBP", "SLG", "OPS", "wOBA"]:
-            vals = sdf[col].dropna()
+            vals = agg[col].replace([np.inf, -np.inf], np.nan).dropna()
             if len(vals) < 5:
                 continue
             thresholds[col] = {
@@ -2491,6 +2190,11 @@ def server(input, output, session):
     def session_player_type_warning():
         session_val = input.session_type()
         ptype = input.player_type()
+        src = input.data_source()
+        if src == "hittrax" and ptype == "pitcher":
+            return "⚠️  HitTrax only contains batter data. Switch Player Type to Batter to view the profile."
+        if src == "rapsodo" and ptype == "batter":
+            return "⚠️  Rapsodo only contains pitcher data. Switch Player Type to Pitcher to view the profile."
         if session_val == "bullpen" and ptype == "batter":
             return "⚠️  Bullpen sessions only contain pitcher data. Switch Player Type to Pitcher to view the profile."
         if session_val == "batting_practice" and ptype == "pitcher":
@@ -2499,44 +2203,569 @@ def server(input, output, session):
 
 
     # -----------------------------------------------------------------------
+    # Prediction tab reactives
+    # -----------------------------------------------------------------------
+    @reactive.calc
+    def prediction_df():
+        data = pitcher_data()
+        if data is None or data.empty:
+            return pd.DataFrame()
+        return build_prediction_by_pitch_type(data)
+
+    @reactive.calc
+    def prediction_summary():
+        return select_prediction_summary(prediction_df())
+
+    @reactive.calc
+    def ml_prediction_state():
+        empty_st = {"use_ml": False, "message": "", "df": pd.DataFrame(),
+                    "summary": {"best_strike": None, "best_putaway": None, "caution": None},
+                    "training_note": "", "metrics_note": "", "warning_note": ""}
+        if input.player_type() != "pitcher":
+            return empty_st
+        data = pitcher_data()
+        if data is None or data.empty:
+            return empty_st
+        league = SOURCE_SLICES.get("trackman")
+        if league is None or league.empty:
+            if MASTER_DF is not None and not MASTER_DF.empty and "DataSource" in MASTER_DF.columns:
+                league = MASTER_DF[MASTER_DF["DataSource"].astype(str) == "trackman"].reset_index(drop=True)
+            else:
+                league = MASTER_DF
+        desc = build_prediction_by_pitch_type(data)
+        return prediction_pipeline.compute_ml_prediction_bundle(
+            pitcher_df=data,
+            league_df=league,
+            descriptive_by_ptype=desc,
+            batter_side_filter=input.batter_side(),
+            pitch_col=PITCH_TYPE_COL,
+            zone_bounds=(ZONE_LEFT, ZONE_RIGHT, ZONE_BOTTOM, ZONE_TOP),
+        )
+
+    @reactive.calc
+    def ml_prediction_df():
+        return ml_prediction_state()["df"]
+
+    @reactive.calc
+    def ml_prediction_summary():
+        return ml_prediction_state()["summary"]
+
+    @output
+    @render.ui
+    def prediction_content():
+        if input.player_type() != "pitcher":
+            return ui.div("Prediction is currently available for pitcher view only.",
+                          style="padding:20px;color:#666;text-align:center;font-size:16px;")
+        if input.data_source() not in ("trackman",):
+            return ui.div("⚠️  Prediction is available for Trackman data only. Switch Data Source to Trackman to view predictions.", style=(
+                "padding:14px 18px; border-radius:8px; background:#fef9ec;"
+                "border:1.5px solid #DDB945; color:#6b4e00;"
+                "font-size:16px; font-weight:700; margin-top:12px;"
+            ))
+
+        pred = prediction_df()
+        if pred is None or pred.empty:
+            return ui.div("No prediction data available for the selected filters.",
+                          style="padding:20px;color:#666;text-align:center;font-size:16px;")
+
+        st = ml_prediction_state()
+        use_ml = bool(st.get("use_ml"))
+        summ = st["summary"] if use_ml else prediction_summary()
+        fallback_note = (st.get("message") or "").strip()
+
+        def _pct(x):
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
+            return f"{float(x) * 100:.1f}%"
+
+        def _short_explainer(key):
+            if key == "best_strike":
+                return "Consistently lands in the zone."
+            if key == "best_putaway":
+                return "Generates swings and misses late in counts."
+            return "Gets hit hard more often when left over the plate."
+
+        def _takeaway(key):
+            if key == "best_strike":
+                return "Most reliable pitch to get ahead in the count"
+            if key == "best_putaway":
+                return "Best swing-and-miss pitch in two-strike situations"
+            return "Most likely to get hit hard if mislocated"
+
+        def _when_to_use(key):
+            if key == "best_strike":
+                return ["Early counts (0-0, 1-0)", "When you need a strike"]
+            if key == "best_putaway":
+                return ["Two-strike counts", "After showing fastball"]
+            return ["Use carefully in hitter's counts", "Avoid middle-middle location"]
+
+        def _card_theme(key):
+            if key == "best_strike":
+                return ("#0f8a4a", "#f4fff8")
+            if key == "best_putaway":
+                return ("#b38b00", "#fffdf4")
+            return ("#b91c1c", "#fff7f7")
+
+        def _card(title, key):
+            c = summ.get(key)
+            border_color, bg_color = _card_theme(key)
+            if not c or not c.get("pitch") or c.get("pitch") == "—":
+                body = ui.div("Not enough data for this recommendation.", style="font-size:15px;color:#555;")
+            elif c.get("is_ml"):
+                warn = c.get("sample_warning") or ""
+                warn_ui = ui.div(ui.tags.span("Sample note: ", style="font-weight:800;"), warn, style="font-size:13px;color:#854F0B;margin-top:8px;") if warn else None
+                bullets = _when_to_use(key)
+                body = ui.div(
+                    ui.div(str(c["pitch"]), style="font-size:32px;font-weight:900;margin-bottom:6px;color:#111;"),
+                    ui.div(_takeaway(key), style="font-size:15px;font-weight:900;color:#111;margin-bottom:8px;"),
+                    ui.div(
+                        f"Strike {_pct(c.get('pred_strike'))} | Whiff {_pct(c.get('pred_whiff'))} | Hard Contact Risk {_pct(c.get('pred_hard'))}",
+                        style="font-size:15px;color:#222;margin-bottom:8px;",
+                    ),
+                    ui.div(_short_explainer(key), style="font-size:14px;color:#222;line-height:1.35;"),
+                    ui.div("When to use:", style="font-size:13px;font-weight:900;color:#111;margin-top:10px;"),
+                    ui.tags.ul(
+                        ui.tags.li(bullets[0], style="font-size:13px;color:#222;"),
+                        ui.tags.li(bullets[1], style="font-size:13px;color:#222;"),
+                        style="margin:4px 0 0 18px;padding:0;",
+                    ),
+                    warn_ui,
+                )
+            else:
+                body = ui.div("Historical summary only (ML unavailable).", style="font-size:14px;color:#666;")
+
+            return ui.div(
+                ui.div(title, style=f"font-size:14px;font-weight:900;letter-spacing:0.04em;color:{border_color};margin-bottom:8px;"),
+                body,
+                style=f"flex:1;min-width:220px;padding:16px;background:{bg_color};border:1px solid #d6d6d6;border-radius:10px;border-top:5px solid {border_color};",
+            )
+
+        strike_pitch = ((summ.get("best_strike") or {}).get("pitch") or "this pitch")
+        putaway_pitch = ((summ.get("best_putaway") or {}).get("pitch") or "this pitch")
+        caution_pitch = ((summ.get("caution") or {}).get("pitch") or "this pitch")
+        strategy_ui = ui.div(
+            ui.div("Pitching Strategy Summary:", style="font-size:15px;font-weight:900;color:#111;margin-bottom:4px;"),
+            ui.div(
+                f"This pitcher leans on the {str(strike_pitch).lower()} for control, "
+                f"uses the {str(putaway_pitch).lower()} as the put-away pitch, "
+                f"and should be cautious with the {str(caution_pitch).lower()} when behind in the count.",
+                style="font-size:15px;color:#222;line-height:1.4;",
+            ),
+            style="padding:10px 12px;border:1px solid #d9d9d9;border-left:5px solid #111;border-radius:8px;background:#fcfcfc;margin-bottom:10px;",
+        )
+
+        train_note = (st.get("training_note") or "").strip()
+        train_ui = ui.div(train_note, style="font-size:12px;color:#666;font-style:italic;margin-bottom:6px;") if (use_ml and train_note) else None
+        met_note = (st.get("metrics_note") or "").strip()
+        met_ui = ui.div(f"Validation: {met_note}", style="font-size:11px;color:#777;margin-bottom:6px;") if (use_ml and met_note) else None
+        warn_note = (st.get("warning_note") or "").strip()
+        warn_ui = ui.div(
+            f"Estimate note: {warn_note}",
+            style="font-size:12px;color:#854F0B;font-weight:700;margin-bottom:8px;",
+        ) if (use_ml and warn_note) else None
+        fb_ui = ui.div(fallback_note, style="font-size:14px;color:#854F0B;font-weight:700;margin-bottom:12px;") if (not use_ml and fallback_note) else None
+
+        advanced_ui = ui.div()
+        if use_ml:
+            advanced_ui = ui.tags.details(
+                ui.tags.summary("Advanced Metrics"),
+                ui.div(
+                    ui.tags.p(
+                        "Model detail view: shows how each pitch profile shifts expected outcomes versus league-average baseline.",
+                        style="font-size:13px;color:#666;margin:8px 0 4px 0;",
+                    ),
+                    ui.tags.p(
+                        ui.tags.span("Green/right", style="color:#166534;font-weight:800;"),
+                        " = increases the outcome | ",
+                        ui.tags.span("Red/left", style="color:#991b1b;font-weight:800;"),
+                        " = decreases the outcome | Values are directional effects, not raw probabilities.",
+                        style="font-size:12px;color:#555;margin:0 0 8px 0;",
+                    ),
+                    ui.output_ui("prediction_advanced_impacts_ui"),
+                    ui.output_ui("prediction_model_drivers_ui"),
+                    ui.output_table("prediction_advanced_table"),
+                    ui.tags.p(
+                        "Use these values to compare relative strengths across this pitcher's options. Treat small gaps as equivalent tiers; prioritize cards and game context for final pitch calling.",
+                        style="font-size:12px;color:#555;margin:8px 0 4px 0;",
+                    ),
+                ),
+                style="margin-top:12px;padding:8px;border:1px solid #ddd;border-radius:8px;background:#fafafa;",
+            )
+
+        return ui.div(
+            strategy_ui, train_ui, met_ui, warn_ui, fb_ui,
+            ui.div(
+                _card("Best strike / command pitch", "best_strike"),
+                _card("Best put-away option", "best_putaway"),
+                _card("Highest damage-risk pitch", "caution"),
+                style="display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;",
+            ),
+            advanced_ui,
+            style="padding:4px 0 18px 0;",
+            class_="prediction-tab-wrap",
+        )
+
+    @output
+    @render.ui
+    def prediction_table_section():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return ui.div()
+        return ui.div(
+            ui.div("Summary by Pitch Type", style=(
+                "font-size:16px;font-weight:900;margin:18px 0 10px 0;text-align:center;"
+            )),
+            ui.div(ui.output_table("prediction_table"), class_="usage-table-wrap"),
+        )
+
+    @output
+    @render.table
+    def prediction_table():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return pd.DataFrame()
+        st = ml_prediction_state()
+        if st.get("use_ml"):
+            return prediction_pipeline.format_ml_prediction_table_display(st["df"], st["summary"])
+        return format_prediction_table_display(prediction_df(), prediction_summary())
+
+    @output
+    @render.ui
+    def prediction_advanced_impacts_ui():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return ui.div()
+        st = ml_prediction_state()
+        if not st.get("use_ml") or st.get("df") is None or st.get("df").empty:
+            return ui.div()
+
+        adf = st["df"].copy()
+        req_cols = [
+            PITCH_TYPE_COL,
+            "attack_score",
+            "putaway_score",
+            "danger_score",
+            "composite_score",
+            "stability_label",
+        ]
+        req_cols = [c for c in req_cols if c in adf.columns]
+        if len(req_cols) < 5:
+            return ui.div()
+
+        adf = adf[req_cols].copy()
+        adf = adf.sort_values("composite_score", ascending=False, kind="mergesort")
+
+        max_abs = pd.to_numeric(
+            adf[["attack_score", "putaway_score", "danger_score"]].stack(),
+            errors="coerce",
+        ).abs().max()
+        if pd.isna(max_abs) or float(max_abs) <= 0:
+            max_abs = 1.0
+
+        def _fmt_signed(v):
+            try:
+                fv = float(v)
+            except Exception:
+                return "—"
+            return f"{fv:+.3f}"
+
+        low_stability_mask = adf.get("stability_label", pd.Series([""] * len(adf))).astype(str).str.lower().isin(
+            ["low stability", "very low stability"]
+        )
+        has_low_stability = bool(low_stability_mask.any())
+
+        def _chip_text(metric_col, metric_label, high_is_risk=False):
+            vals = pd.to_numeric(adf[metric_col], errors="coerce")
+            if vals.notna().sum() == 0:
+                return f"No data for {metric_label.lower()}."
+            idx = vals.idxmax()
+            pitch = str(adf.loc[idx, PITCH_TYPE_COL])
+            sval = _fmt_signed(adf.loc[idx, metric_col])
+            if has_low_stability:
+                if high_is_risk:
+                    return f"{pitch}: leans toward higher {metric_label.lower()} ({sval})"
+                return f"{pitch}: leans toward stronger {metric_label.lower()} ({sval})"
+            if high_is_risk:
+                return f"{pitch}: highest {metric_label.lower()} ({sval})"
+            return f"{pitch}: strongest {metric_label.lower()} ({sval})"
+
+        chip_style = (
+            "display:inline-block;margin:4px 6px 4px 0;padding:6px 10px;"
+            "border:1px solid #d5d5d5;border-radius:999px;background:#fff;font-size:12px;color:#222;"
+        )
+        chips = ui.div(
+            ui.tags.span(_chip_text("attack_score", "control impact"), style=chip_style),
+            ui.tags.span(_chip_text("putaway_score", "two-strike put-away impact"), style=chip_style),
+            ui.tags.span(_chip_text("danger_score", "hard-contact risk impact", high_is_risk=True), style=chip_style),
+            style="margin:4px 0 10px 0;",
+        )
+        low_sample_badge = ui.div()
+        if has_low_stability:
+            low_sample_badge = ui.div(
+                "Low sample: directional only.",
+                style=(
+                    "display:inline-block;margin:0 0 10px 0;padding:5px 9px;"
+                    "border-radius:999px;border:1px solid #f0b429;background:#fff7e6;"
+                    "font-size:12px;font-weight:800;color:#8a5d00;"
+                ),
+            )
+
+        def _impact_row(metric_label, value, positive_color, negative_color):
+            try:
+                fv = float(value)
+            except Exception:
+                fv = 0.0
+            width_pct = max(0.0, min(50.0, 50.0 * abs(fv) / float(max_abs)))
+            if fv >= 0:
+                left_w, right_w = 0.0, width_pct
+                left_bg, right_bg = "transparent", positive_color
+            else:
+                left_w, right_w = width_pct, 0.0
+                left_bg, right_bg = negative_color, "transparent"
+            return ui.div(
+                ui.div(metric_label, style="min-width:210px;font-size:12px;color:#333;font-weight:700;"),
+                ui.div(
+                    ui.div(
+                        ui.div(style=f"position:absolute;left:{50-left_w}%;top:0;height:100%;width:{left_w}%;background:{left_bg};"),
+                        ui.div(style=f"position:absolute;left:50%;top:0;height:100%;width:{right_w}%;background:{right_bg};"),
+                        ui.div(style="position:absolute;left:50%;top:0;height:100%;width:2px;background:#666;transform:translateX(-1px);"),
+                        style="position:relative;height:12px;background:#f1f1f1;border:1px solid #d0d0d0;border-radius:999px;overflow:hidden;",
+                    ),
+                    style="flex:1;min-width:200px;",
+                ),
+                ui.div(_fmt_signed(fv), style="min-width:58px;text-align:right;font-size:12px;color:#222;font-family:monospace;"),
+                style="display:flex;align-items:center;gap:10px;margin:6px 0;",
+            )
+
+        cards = []
+        for _, row in adf.iterrows():
+            pitch = str(row[PITCH_TYPE_COL])
+            stab = str(row.get("stability_label", "")).strip().lower()
+            is_low = stab in ("low stability", "very low stability")
+            card_opacity = "0.72" if is_low else "1.0"
+            stability_note = ui.div()
+            if is_low:
+                stability_note = ui.div(
+                    "Low sample: directional only.",
+                    style="font-size:11px;color:#8a5d00;font-weight:800;margin:3px 0 6px 0;",
+                )
+            cards.append(
+                ui.div(
+                    ui.div(pitch, style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;"),
+                    stability_note,
+                    _impact_row("Control impact", row["attack_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Two-strike put-away impact", row["putaway_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Hard-contact risk impact", row["danger_score"], "#e59a9a", "#86c59a"),
+                    style=(
+                        f"border:1px solid #e0e0e0;border-radius:8px;background:#fff;padding:8px 10px;"
+                        f"margin-bottom:8px;opacity:{card_opacity};"
+                    ),
+                )
+            )
+
+        return ui.div(chips, low_sample_badge, *cards)
+
+    @output
+    @render.ui
+    def prediction_model_drivers_ui():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return ui.div()
+        st = ml_prediction_state()
+        if not st.get("use_ml"):
+            return ui.div()
+        summ = st.get("summary") or {}
+        if not isinstance(summ, dict):
+            return ui.div()
+
+        def _drivers_card(title, card):
+            if not isinstance(card, dict) or not card.get("pitch"):
+                return None
+            pos = [str(x) for x in card.get("drivers_pos", []) if str(x).strip()]
+            neg = [str(x) for x in card.get("drivers_neg", []) if str(x).strip()]
+            src = str(card.get("drivers_source", "Fallback profile drivers")).strip() or "Fallback profile drivers"
+            stab = str(card.get("stability_label", "")).strip()
+            if not pos:
+                pos = ["limited positive signal"]
+            if not neg:
+                neg = ["limited counter-signal"]
+            return ui.div(
+                ui.div(
+                    f"{title}: {card.get('pitch', '—')}",
+                    style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;",
+                ),
+                ui.div(
+                    ui.tags.span("Upward drivers: ", style="font-weight:800;color:#166534;"),
+                    ", ".join(pos[:2]),
+                    style="font-size:12px;color:#222;margin-bottom:2px;",
+                ),
+                ui.div(
+                    ui.tags.span("Downward drivers: ", style="font-weight:800;color:#991b1b;"),
+                    ", ".join(neg[:2]),
+                    style="font-size:12px;color:#222;margin-bottom:4px;",
+                ),
+                ui.div(
+                    f"Source: {src} | Stability: {stab or '—'}",
+                    style="font-size:11px;color:#666;",
+                ),
+                style="border:1px solid #dfdfdf;background:#fff;border-radius:8px;padding:8px 10px;margin-bottom:8px;",
+            )
+
+        cards = [
+            _drivers_card("Best command", summ.get("best_strike")),
+            _drivers_card("Best put-away", summ.get("best_putaway")),
+            _drivers_card("Highest risk", summ.get("caution")),
+        ]
+        cards = [c for c in cards if c is not None]
+        if not cards:
+            return ui.div()
+
+        return ui.div(
+            ui.div("Model Drivers (SHAP)", style="font-size:14px;font-weight:900;color:#111;margin:10px 0 6px 0;"),
+            ui.div(
+                "SHAP drivers explain why model probabilities moved; impact bars show decision-score ranking.",
+                style="font-size:12px;color:#555;margin:0 0 8px 0;",
+            ),
+            *cards,
+        )
+
+    @output
+    @render.table
+    def prediction_advanced_table():
+        if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
+            return pd.DataFrame()
+        st = ml_prediction_state()
+        if not st.get("use_ml") or st.get("df") is None or st.get("df").empty:
+            return pd.DataFrame()
+        adf = st["df"].copy()
+        keep = [PITCH_TYPE_COL, "attack_score", "putaway_score", "danger_score", "composite_score"]
+        keep = [c for c in keep if c in adf.columns]
+        adf = adf.sort_values("composite_score", ascending=False, kind="mergesort")
+        adf = adf[keep].rename(columns={
+            PITCH_TYPE_COL: "Pitch",
+            "attack_score": "Control impact",
+            "putaway_score": "Two-strike put-away impact",
+            "danger_score": "Hard-contact risk impact",
+            "composite_score": "Overall profile impact",
+        })
+        for c in ["Control impact", "Two-strike put-away impact", "Hard-contact risk impact", "Overall profile impact"]:
+            if c in adf.columns:
+                adf[c] = adf[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "—")
+        return adf
+
+    @reactive.effect
+    @reactive.event(input.retrain_prediction_models)
+    def _retrain_prediction_models():
+        prediction_pipeline.clear_prediction_cache(remove_disk=True)
+        ui.notification_show(
+            "Prediction models cache cleared. Models will retrain on next prediction refresh.",
+            type="message",
+            duration=4,
+        )
+
+    # -----------------------------------------------------------------------
     # Comparison tab reactives
     # -----------------------------------------------------------------------
     @reactive.effect
     def _update_cmp_opponent_teams():
         df = current_df()
-        if df is None or df.empty or "PitcherTeam" not in df.columns:
-            ui.update_select("cmp_opponent_team", choices={}, session=session)
+        if df is None or df.empty:
+            try:
+                ui.update_select("cmp_opponent_team", choices={}, session=session)
+            except Exception:
+                pass
+            return
+
+        ptype = input.player_type()
+        if ptype == "batter":
+            col = "BatterTeam"
+        else:
+            col = "PitcherTeam"
+
+        if col not in df.columns:
+            try:
+                ui.update_select("cmp_opponent_team", choices={}, session=session)
+            except Exception:
+                pass
             return
 
         teams = sorted([
-            t for t in df["PitcherTeam"].dropna().astype(str).str.strip().unique().tolist()
-            if t 
+            t for t in df[col].dropna().astype(str).str.strip().unique().tolist()
+            if t
         ])
 
         choices = {t: TEAM_NAME_MAP.get(t, t) for t in teams}
         choices = dict(sorted(choices.items(), key=lambda x: x[1]))
 
-        ui.update_select(
-            "cmp_opponent_team",
-            choices=choices,
-            selected=list(choices.keys())[0] if choices else None,
-            session=session,
-        )
+        default_team = list(choices.keys())[0] if choices else None
 
-        
+        try:
+            ui.update_select(
+                "cmp_opponent_team",
+                choices=choices,
+                selected=default_team,
+                session=session,
+            )
+        except Exception:
+            pass
+
+        # Also populate the opponent player dropdown immediately for the default team
+        # (avoids timing issue where player dropdown is empty on first tab click)
+        if default_team and not df.empty:
+            ptype = input.player_type()
+            if ptype == "pitcher":
+                _populate_cmp_pitcher(df, default_team)
+            else:
+                _populate_cmp_batter(df, default_team)
+
+    def _populate_cmp_pitcher(df, opp_team):
+        d = df[df["PitcherTeam"].astype(str).str.strip() == str(opp_team)]
+        if d.empty or "PitcherId" not in d.columns or "Pitcher" not in d.columns:
+            try: ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            except: pass
+            return
+        lookup = d[["PitcherId","Pitcher"]].dropna().drop_duplicates().sort_values(["Pitcher","PitcherId"])
+        choices = {str(r.PitcherId): (format_display_name(r.Pitcher) or str(r.PitcherId)) for r in lookup.itertuples(index=False)}
+        if str(opp_team) == PURDUE_CODE:
+            pid1 = input.player()
+            choices = {k: v for k, v in choices.items() if k != str(pid1)}
+        try: ui.update_select("cmp_opponent_pitcher", choices=choices, selected=list(choices.keys())[0] if choices else None, session=session)
+        except: pass
+
+    def _populate_cmp_batter(df, opp_team):
+        d = df[df["BatterTeam"].astype(str).str.strip() == str(opp_team)]
+        if d.empty or "BatterId" not in d.columns or "Batter" not in d.columns:
+            try: ui.update_select("cmp_opponent_batter", choices={}, session=session)
+            except: pass
+            return
+        lookup = d[["BatterId","Batter"]].dropna().drop_duplicates().sort_values(["Batter","BatterId"])
+        choices = {str(r.BatterId): (format_display_name(r.Batter) or str(r.BatterId)) for r in lookup.itertuples(index=False)}
+        if str(opp_team) == PURDUE_CODE:
+            bid1 = input.player()
+            choices = {k: v for k, v in choices.items() if k != str(bid1)}
+        try: ui.update_select("cmp_opponent_batter", choices=choices, selected=list(choices.keys())[0] if choices else None, session=session)
+        except: pass
+
     @reactive.effect
     def _update_cmp_opponent_pitchers():
+        # Read extra dependencies to ensure this re-fires on filter changes
+        _ = input.team()
+        _ = input.data_source()
+        if input.player_type() == "batter":
+            return  # batter mode uses _update_cmp_opponent_batters instead
         df = current_df()
         opp_team = input.cmp_opponent_team()
 
         if df is None or df.empty or not opp_team:
-            ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            try:
+                ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            except Exception:
+                pass
             return
 
         d = df[df["PitcherTeam"].astype(str).str.strip() == str(opp_team)]
 
         if d.empty or "PitcherId" not in d.columns or "Pitcher" not in d.columns:
-            ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            try:
+                ui.update_select("cmp_opponent_pitcher", choices={}, session=session)
+            except Exception:
+                pass
             return
 
         lookup = (
@@ -2555,12 +2784,15 @@ def server(input, output, session):
             pid1 = input.player()
             choices = {k: v for k, v in choices.items() if k != str(pid1)}
 
-        ui.update_select(
-            "cmp_opponent_pitcher",
-            choices=choices,
-            selected=list(choices.keys())[0] if choices else None,
-            session=session,
-        )
+        try:
+            ui.update_select(
+                "cmp_opponent_pitcher",
+                choices=choices,
+                selected=list(choices.keys())[0] if choices else None,
+                session=session,
+            )
+        except Exception:
+            pass
 
 
     @reactive.calc
@@ -2662,6 +2894,548 @@ def server(input, output, session):
         val = input.cmp_pitch_type()
         return "All Pitches" if val in (None, "", "all") else str(val)
 
+
+    # ── Batter comparison reactives ─────────────────────────────────────────
+    @reactive.effect
+    def _update_cmp_opponent_batters():
+        # Read extra dependencies to ensure this re-fires on filter changes
+        _ = input.team()
+        _ = input.data_source()
+        if input.player_type() != "batter":
+            return
+        df = current_df()
+        opp_team = input.cmp_opponent_team()
+
+        if df is None or df.empty or not opp_team:
+            try:
+                ui.update_select("cmp_opponent_batter", choices={}, session=session)
+            except Exception:
+                pass
+            return
+
+        d = df[df["BatterTeam"].astype(str).str.strip() == str(opp_team)]
+
+        if d.empty or "BatterId" not in d.columns or "Batter" not in d.columns:
+            try:
+                ui.update_select("cmp_opponent_batter", choices={}, session=session)
+            except Exception:
+                pass
+            return
+
+        lookup = (
+            d[["BatterId", "Batter"]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values(["Batter", "BatterId"])
+        )
+
+        choices = {
+            str(r.BatterId): (format_display_name(r.Batter) or str(r.BatterId))
+            for r in lookup.itertuples(index=False)
+        }
+
+        if str(opp_team) == PURDUE_CODE:
+            bid1 = input.player()
+            choices = {k: v for k, v in choices.items() if k != str(bid1)}
+
+        try:
+            ui.update_select(
+                "cmp_opponent_batter",
+                choices=choices,
+                selected=list(choices.keys())[0] if choices else None,
+                session=session,
+            )
+        except Exception:
+            pass
+
+    @reactive.calc
+    def cmp_batter_purdue_df():
+        df = current_df()
+        bid = input.player() if input.player_type() == "batter" else None
+        if df is None or df.empty or not bid:
+            return pd.DataFrame()
+        team = input.team()
+        if team and "BatterTeam" in df.columns:
+            df = df[df["BatterTeam"].astype(str).str.strip() == str(team)]
+        df = apply_session_filter_for_team(df, team, input.session_type())
+        df = df[df["BatterId"].astype(str) == str(bid)]
+        return df
+
+    @reactive.calc
+    def cmp_batter_opponent_df():
+        df = current_df()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        try:
+            opp_team = input.cmp_opponent_team()
+            opp_bid = input.cmp_opponent_batter()
+        except Exception:
+            return pd.DataFrame()
+        if not opp_team or not opp_bid:
+            return pd.DataFrame()
+        d = df[df["BatterTeam"].astype(str).str.strip() == str(opp_team)]
+        return d[d["BatterId"].astype(str) == str(opp_bid)]
+
+    @reactive.calc
+    def cmp_batter_purdue_name():
+        d = cmp_batter_purdue_df()
+        if d.empty or "Batter" not in d.columns:
+            return "Purdue Batter"
+        return format_display_name(d["Batter"].iloc[0]) or "Purdue Batter"
+
+    @reactive.calc
+    def cmp_batter_opponent_name():
+        d = cmp_batter_opponent_df()
+        if d.empty or "Batter" not in d.columns:
+            return "Opponent Batter"
+        return format_display_name(d["Batter"].iloc[0]) or "Opponent Batter"
+
+    # ── Batter comparison render functions ───────────────────────────────────
+    @output
+    @render.ui
+    def cmp_batter_batting_line():
+        pur_df = cmp_batter_purdue_df()
+        opp_df = cmp_batter_opponent_df()
+        pur_name = cmp_batter_purdue_name()
+        opp_name = cmp_batter_opponent_name()
+
+        bid_pur = input.player() if input.player_type() == "batter" else None
+        try:
+            bid_opp = input.cmp_opponent_batter()
+        except Exception:
+            bid_opp = None
+
+        pur_s = compute_batter_stats(pur_df, bid_pur) if bid_pur else {}
+        opp_s = compute_batter_stats(opp_df, bid_opp) if bid_opp else {}
+
+        def _get_side(df):
+            if df is None or df.empty or "BatterSide" not in df.columns:
+                return ""
+            side = str(df["BatterSide"].iloc[0]).strip()
+            if side.lower() in ("nan", ""):
+                return ""
+            return side
+
+        pur_side = _get_side(pur_df)
+        opp_side = _get_side(opp_df)
+
+        def fmt(v):
+            if v is None:
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v * 1000)):03d}"
+
+        metrics = ["PA", "BA", "OBP", "SLG", "OPS", "K", "BB"]
+        keys = ["PA", "BA", "OBP", "SLG", "OPS", "K", "BB"]
+
+        th_style = (
+            "padding:8px 12px;text-align:center;font-weight:700;font-size:11px;"
+            "background:#1a1a1a;color:#CDA735;"
+        )
+        td_style = "padding:8px 12px;text-align:center;font-size:13px;border-bottom:1px solid #eee;color:#333;font-weight:700;"
+
+        def _get_val(s, key):
+            if not s:
+                return "—"
+            v = s.get(key)
+            if v is None:
+                return "—"
+            if key in ("BA", "OBP", "SLG", "OPS"):
+                return fmt(v)
+            return str(v)
+
+        def _card(name, side, s, color, df=None, bid=None):
+            side_txt = f" | Bats: {side}" if side else ""
+            header_style = (
+                f"font-size:14px;font-weight:700;color:#fff;padding:10px 14px;"
+                f"background:{color};border-radius:10px 10px 0 0;"
+                "display:flex;align-items:center;gap:10px;"
+            )
+            rows = [ui.tags.td(_get_val(s, k), style=td_style) for k in keys]
+
+            # Low sample warning badge (same style as pitcher comparison)
+            n_pitches = 0
+            if df is not None and not df.empty and bid:
+                n_pitches = len(df[df["BatterId"].astype(str) == str(bid)])
+            warn_badge = []
+            if 0 < n_pitches < 20:
+                warn_badge = [ui.tags.span(
+                    "⚠ Low Sample",
+                    style=(
+                        "display:inline-block;background:#fef3c7;border:1px solid #f59e0b;"
+                        "border-radius:12px;padding:2px 10px;font-size:11px;"
+                        "font-weight:700;color:#92400e;"
+                    ),
+                )]
+
+            return ui.tags.div(
+                ui.tags.div(
+                    ui.tags.span(f"{name}{side_txt}"),
+                    *warn_badge,
+                    style=header_style,
+                ),
+                ui.tags.table(
+                    ui.tags.thead(ui.tags.tr(*[ui.tags.th(m, style=th_style) for m in metrics])),
+                    ui.tags.tbody(ui.tags.tr(*rows)),
+                    style="width:100%;border-collapse:collapse;",
+                ),
+                style="background:#fff;border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;flex:1;",
+            )
+
+        return ui.div(
+            _card(pur_name, pur_side, pur_s, "#CDA735", pur_df, bid_pur),
+            _card(opp_name, opp_side, opp_s, "#555", opp_df, bid_opp),
+            style="display:flex;gap:14px;margin-bottom:14px;",
+        )
+
+    def _cmp_batter_data_pair():
+        """Get both batter DataFrames + names + IDs for comparison charts."""
+        pur_df = cmp_batter_purdue_df()
+        opp_df = cmp_batter_opponent_df()
+        pur_name = cmp_batter_purdue_name()
+        opp_name = cmp_batter_opponent_name()
+        bid_pur = input.player() if input.player_type() == "batter" else None
+        try: bid_opp = input.cmp_opponent_batter()
+        except: bid_opp = None
+        return pur_df, opp_df, pur_name, opp_name, bid_pur, bid_opp
+
+    def _cmp_prep_batter(df, bid):
+        """Filter + clean location data for one batter (catcher's view)."""
+        if df is None or df.empty or not bid:
+            return None
+        d = df[df["BatterId"].astype(str) == str(bid)].copy()
+        for c in ["PlateLocSide", "PlateLocHeight"]:
+            if c in d.columns: d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
+        # Flip to catcher's view to match the Home tab batter charts
+        d["PlateLocSide"] = -d["PlateLocSide"]
+        if "PitchCall" not in d.columns: d["PitchCall"] = ""
+        if "PlayResult" not in d.columns: d["PlayResult"] = ""
+        return d if not d.empty else None
+
+    @output
+    @render.plot
+    def cmp_batter_out_rate():
+        pur_df, opp_df, pur_name, opp_name, bid_pur, bid_opp = _cmp_batter_data_pair()
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 7))
+        fig.patch.set_facecolor("#f7f7f7")
+
+        OUT_RESULTS = {"Out", "FieldersChoice", "Strikeout", "Sacrifice",
+                       "SacrificeFly", "SacrificeBunt", "Error"}
+        PA_RESULTS = {"Single", "Double", "Triple", "HomeRun", "Out", "FieldersChoice",
+                      "Strikeout", "Walk", "HitByPitch", "SacrificeFly", "SacrificeBunt",
+                      "Sacrifice", "Error", "CatcherInterference"}
+
+        zw = (ZONE_RIGHT - ZONE_LEFT) / 3
+        zh = (ZONE_TOP - ZONE_BOTTOM) / 3
+        col_edges = [ZONE_LEFT + i * zw for i in range(4)]
+        row_edges = [ZONE_BOTTOM + i * zh for i in range(4)]
+
+        for idx, (df, bid, name) in enumerate([
+            (pur_df, bid_pur, pur_name), (opp_df, bid_opp, opp_name),
+        ]):
+            ax = axes[idx]
+            ax.set_facecolor("#f7f7f7")
+            ax.set_title(name, fontsize=13, fontweight="bold", pad=15)
+
+            d = _cmp_prep_batter(df, bid)
+            if d is None:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, color="#888")
+                ax.set_xticks([]); ax.set_yticks([])
+                for spine in ax.spines.values(): spine.set_visible(False)
+                continue
+
+            pc = d["PitchCall"].astype(str).str.strip()
+            pr = d["PlayResult"].astype(str).str.strip()
+            is_terminal = pr.isin(PA_RESULTS) | pc.eq("HitByPitch")
+            total_pa = 0; total_outs = 0
+
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT - 0.35, ZONE_BOTTOM - 0.30),
+                (ZONE_RIGHT - ZONE_LEFT) + 0.70, (ZONE_TOP - ZONE_BOTTOM) + 0.60,
+                facecolor="#edf4ee", edgecolor="none", zorder=0,
+            ))
+
+            for ri in range(3):
+                for ci in range(3):
+                    x0, x1 = col_edges[ci], col_edges[ci + 1]
+                    y0, y1 = row_edges[ri], row_edges[ri + 1]
+                    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                    in_cell = d["PlateLocSide"].between(x0, x1) & d["PlateLocHeight"].between(y0, y1)
+                    term_in = in_cell & is_terminal
+                    n_pa = int(term_in.sum())
+                    n_outs = int((term_in & pr.isin(OUT_RESULTS)).sum())
+                    total_pa += n_pa; total_outs += n_outs
+
+                    if n_pa == 0:
+                        cell_bg = "#f5f5f5"
+                    else:
+                        op = n_outs / n_pa
+                        if op >= 0.75: cell_bg = "#c0392b"
+                        elif op >= 0.50: cell_bg = "#f0b000"
+                        elif op >= 0.25: cell_bg = "#f5dfb3"
+                        else: cell_bg = "#ffffff"
+
+                    ax.add_patch(Rectangle((x0, y0), zw, zh, facecolor=cell_bg, edgecolor="#aaa", linewidth=1, zorder=2))
+                    if n_pa == 0:
+                        ax.text(cx, cy, "—", ha="center", va="center", fontsize=10, color="#bbb", zorder=3)
+                    else:
+                        op = n_outs / n_pa
+                        txt_c = "#fff" if op >= 0.50 else "#222"
+                        ax.text(cx, cy + zh * 0.12, f"{int(round(op*100))}%",
+                                ha="center", va="center", fontsize=12, fontweight="bold", color=txt_c, zorder=3)
+                        ax.text(cx, cy - zh * 0.12, f"{n_outs}/{n_pa}",
+                                ha="center", va="center", fontsize=8, color="#ffe0db" if op >= 0.75 else "#666", zorder=3)
+
+            ax.add_patch(Rectangle(
+                (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM,
+                fill=False, linewidth=2.5, edgecolor="#222", zorder=5,
+            ))
+
+            out_pct = f"{int(round(total_outs / total_pa * 100))}%" if total_pa > 0 else "—"
+            ax.text(0.5, 1.00, f"Out Rate: {out_pct} | In-Zone PA: {total_pa}",
+                    transform=ax.transAxes, ha="center", va="bottom", fontsize=9, color="#555")
+
+            ax.set_xlim(ZONE_LEFT - 1.0, ZONE_RIGHT + 1.0)
+            ax.set_ylim(ZONE_BOTTOM - 0.6, ZONE_TOP + 0.8)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_xticks([]); ax.set_yticks([])
+            for spine in ax.spines.values(): spine.set_visible(False)
+
+        fig.subplots_adjust(top=0.88, bottom=0.04, left=0.05, right=0.95, wspace=0.15)
+        plt.close(fig)
+        return fig
+
+    @output
+    @render.ui
+    def cmp_batter_pitch_results():
+        pur_df, opp_df, pur_name, opp_name, bid_pur, bid_opp = _cmp_batter_data_pair()
+
+        RESULT_TRACES = [
+            ("Swing & Miss", {"calls": {"StrikeSwinging"}, "symbol": "x", "color": "#E24B4A", "size": 10}),
+            ("Foul", {"calls": {"FoulBallFieldable", "FoulBallNotFieldable"}, "symbol": "triangle-up", "color": "#7B68AE", "size": 9}),
+            ("Called Strike", {"calls": {"StrikeCalled"}, "symbol": "square", "color": "#E67E22", "size": 8}),
+            ("Ball", {"calls": {"BallCalled", "Ball"}, "symbol": "circle", "color": "#aaaaaa", "size": 7}),
+        ]
+        HIT_RESULTS = {"Single", "Double", "Triple", "HomeRun"}
+        OUT_RESULTS = {"Out", "FieldersChoice", "Error", "Sacrifice", "SacrificeFly", "SacrificeBunt"}
+
+        plotly_config = {
+            "displayModeBar": True, "displaylogo": False, "scrollZoom": True,
+            "modeBarButtonsToRemove": [
+                "toImage", "select2d", "lasso2d",
+                "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
+            ],
+        }
+
+        from plotly.subplots import make_subplots
+
+        pur_d = _cmp_prep_batter(pur_df, bid_pur)
+        opp_d = _cmp_prep_batter(opp_df, bid_opp)
+        n_pur = len(pur_d) if pur_d is not None else 0
+        n_opp = len(opp_d) if opp_d is not None else 0
+
+        fig = make_subplots(rows=1, cols=2,
+            subplot_titles=[f"{pur_name} (n={n_pur})", f"{opp_name} (n={n_opp})"],
+            horizontal_spacing=0.06,
+        )
+
+        legend_added = set()
+
+        for col_idx, d in enumerate([pur_d, opp_d], start=1):
+            fig.add_shape(type="rect",
+                x0=ZONE_LEFT, y0=ZONE_BOTTOM, x1=ZONE_RIGHT, y1=ZONE_TOP,
+                line=dict(color="black", width=2), fillcolor="rgba(0,0,0,0)",
+                row=1, col=col_idx,
+            )
+            # Home plate — point faces UP toward the strike zone
+            hp_x = [-0.71, 0.71, 0.71, 0, -0.71]
+            hp_y = [0.95, 0.95, 1.15, 1.35, 1.15]
+            fig.add_trace(go.Scatter(
+                x=hp_x + [hp_x[0]], y=hp_y + [hp_y[0]],
+                mode="lines", fill="toself", fillcolor="rgba(255,255,255,0.9)",
+                line=dict(color="#222", width=1.5), showlegend=False, hoverinfo="skip",
+            ), row=1, col=col_idx)
+
+            if d is None:
+                fig.add_annotation(text="No data", x=0, y=2.5, showarrow=False,
+                                   font=dict(size=14, color="#888"), row=1, col=col_idx)
+                continue
+
+            pc = d["PitchCall"].astype(str).str.strip()
+
+            for label, sty in RESULT_TRACES:
+                mask = pc.isin(sty["calls"])
+                if not mask.any(): continue
+                g = d[mask]
+                show = label not in legend_added
+                fig.add_trace(go.Scatter(
+                    x=g["PlateLocSide"], y=g["PlateLocHeight"],
+                    mode="markers", name=label, showlegend=show,
+                    legendgroup=label,
+                    hovertemplate=f"{label}<br>Side: %{{x:.2f}}<br>Height: %{{y:.2f}}<extra></extra>",
+                    marker=dict(size=sty["size"], color=sty["color"], symbol=sty["symbol"],
+                                opacity=0.82, line=dict(color="white", width=0.5)),
+                ), row=1, col=col_idx)
+                legend_added.add(label)
+
+            in_play = d[pc.eq("InPlay")]
+            if not in_play.empty:
+                ip_pr = in_play["PlayResult"].astype(str).str.strip()
+                hits = in_play[ip_pr.isin(HIT_RESULTS)]
+                outs = in_play[ip_pr.isin(OUT_RESULTS)]
+                if not hits.empty:
+                    show = "In-Play Hit" not in legend_added
+                    fig.add_trace(go.Scatter(
+                        x=hits["PlateLocSide"], y=hits["PlateLocHeight"],
+                        mode="markers", name="In-Play Hit", showlegend=show,
+                        legendgroup="In-Play Hit",
+                        hovertemplate="Hit (%{text})<br>Side: %{x:.2f}<br>Height: %{y:.2f}<extra></extra>",
+                        text=hits["PlayResult"].astype(str).str.strip(),
+                        marker=dict(size=10, color="#2E8B57", symbol="diamond", opacity=0.85,
+                                    line=dict(color="white", width=0.5)),
+                    ), row=1, col=col_idx)
+                    legend_added.add("In-Play Hit")
+                if not outs.empty:
+                    show = "In-Play Out" not in legend_added
+                    fig.add_trace(go.Scatter(
+                        x=outs["PlateLocSide"], y=outs["PlateLocHeight"],
+                        mode="markers", name="In-Play Out", showlegend=show,
+                        legendgroup="In-Play Out",
+                        hovertemplate="Out<br>Side: %{x:.2f}<br>Height: %{y:.2f}<extra></extra>",
+                        marker=dict(size=10, color="#8B0000", symbol="diamond", opacity=0.85,
+                                    line=dict(color="white", width=0.5)),
+                    ), row=1, col=col_idx)
+                    legend_added.add("In-Play Out")
+
+        # Independent axes per subplot
+        fig.update_xaxes(range=[ZONE_LEFT-1.0, ZONE_RIGHT+1.0], showgrid=True,
+                         gridcolor="rgba(0,0,0,0.06)", zeroline=False,
+                         showticklabels=False, row=1, col=1)
+        fig.update_yaxes(range=[ZONE_BOTTOM-0.6, ZONE_TOP+0.8], showgrid=True,
+                         gridcolor="rgba(0,0,0,0.06)", zeroline=False,
+                         scaleanchor="x", scaleratio=1,
+                         showticklabels=False, row=1, col=1)
+        fig.update_xaxes(range=[ZONE_LEFT-1.0, ZONE_RIGHT+1.0], showgrid=True,
+                         gridcolor="rgba(0,0,0,0.06)", zeroline=False,
+                         showticklabels=False, row=1, col=2)
+        fig.update_yaxes(range=[ZONE_BOTTOM-0.6, ZONE_TOP+0.8], showgrid=True,
+                         gridcolor="rgba(0,0,0,0.06)", zeroline=False,
+                         scaleanchor="x2", scaleratio=1,
+                         showticklabels=False, row=1, col=2)
+
+        fig.update_layout(
+            paper_bgcolor="#f7f7f7", plot_bgcolor="#f7f7f7",
+            height=550, dragmode="zoom",
+            margin=dict(l=10, r=10, t=60, b=10),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.06, xanchor="center", x=0.5,
+                font=dict(size=9), bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#ccc", borderwidth=1,
+                itemclick="toggleothers", itemdoubleclick="toggle",
+            ),
+        )
+
+        return ui.HTML(fig.to_html(
+            full_html=False, include_plotlyjs=False,
+            config=plotly_config,
+        ))
+
+    @output
+    @render.plot
+    def cmp_batter_radar():
+        pur_df = cmp_batter_purdue_df()
+        opp_df = cmp_batter_opponent_df()
+        pur_name = cmp_batter_purdue_name()
+        opp_name = cmp_batter_opponent_name()
+        bid_pur = input.player() if input.player_type() == "batter" else None
+        try:
+            bid_opp = input.cmp_opponent_batter()
+        except Exception:
+            bid_opp = None
+
+        LABELS = ["Zone\nSw%", "Contact%", "O-Contact%", "Chase%", "Whiff%", "Zone%"]
+        N = len(LABELS)
+        angles = [n / N * 2 * np.pi for n in range(N)] + [0]
+
+        SW = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        CT = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+        def _calc_values(df, bid):
+            values = [0.0] * N
+            if df is None or df.empty or not bid:
+                return values
+            d = df[df["BatterId"].astype(str) == str(bid)].copy()
+            if d.empty:
+                return values
+            pc = d["PitchCall"].astype(str).str.strip() if "PitchCall" in d.columns else pd.Series("", index=d.index)
+            if "PlateLocSide" in d.columns and "PlateLocHeight" in d.columns:
+                d["PlateLocSide"] = pd.to_numeric(d["PlateLocSide"], errors="coerce")
+                d["PlateLocHeight"] = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+                iz = d["PlateLocSide"].between(ZONE_LEFT, ZONE_RIGHT) & d["PlateLocHeight"].between(ZONE_BOTTOM, ZONE_TOP)
+                oz = ~iz & d["PlateLocSide"].notna() & d["PlateLocHeight"].notna()
+                n_iz = iz.sum()
+                n_oz = oz.sum()
+                iz_sw = (iz & pc.isin(SW)).sum()
+                oz_sw = (oz & pc.isin(SW)).sum()
+                oz_ct = (oz & pc.isin(CT)).sum()
+                values[0] = iz_sw / n_iz if n_iz > 0 else 0
+                values[3] = oz_sw / n_oz if n_oz > 0 else 0
+                values[5] = n_iz / len(d) if len(d) > 0 else 0
+                if oz_sw > 0:
+                    values[2] = oz_ct / oz_sw
+            total_sw = pc.isin(SW).sum()
+            total_ct = pc.isin(CT).sum()
+            total_whiff = (pc == "StrikeSwinging").sum()
+            values[1] = total_ct / total_sw if total_sw > 0 else 0
+            values[4] = total_whiff / total_sw if total_sw > 0 else 0
+            return values
+
+        pur_vals = _calc_values(pur_df, bid_pur)
+        opp_vals = _calc_values(opp_df, bid_opp)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7), subplot_kw=dict(polar=True))
+        fig.patch.set_facecolor("#f7f7f7")
+
+        for ax, vals, name, color in [
+            (ax1, pur_vals, pur_name, "#CDA735"),
+            (ax2, opp_vals, opp_name, "#555"),
+        ]:
+            ax.set_facecolor("#f7f7f7")
+            ax.set_title(name, fontsize=13, fontweight="bold", pad=15)
+
+            # Dashed grid circles
+            for r in [0.25, 0.50, 0.75, 1.0]:
+                ax.plot(angles, [r] * (N + 1), color="#ddd", lw=0.6, ls="--", zorder=1)
+
+            vals_closed = vals + [vals[0]]
+            ax.plot(angles, vals_closed, color=color, linewidth=2.5, zorder=3)
+            ax.fill(angles, vals_closed, color=color, alpha=0.18, zorder=2)
+
+            # Data point dots
+            ax.scatter(angles[:-1], vals, s=42, color=color, zorder=4, edgecolors="white", lw=0.8)
+
+            # Value labels — position inside the shape to avoid overlap with axis labels
+            for ang, val in zip(angles[:-1], vals):
+                # Place label slightly inside the data point (toward center)
+                r_pos = max(val - 0.10, 0.05) if val >= 0.50 else min(val + 0.15, 1.10)
+                ax.text(ang, r_pos, f"{val * 100:.0f}%",
+                        ha="center", va="center", fontsize=8, fontweight="bold",
+                        color=color, zorder=5)
+
+            ax.set_xticks(angles[:-1])
+            ax.set_xticklabels(LABELS, fontsize=8)
+            ax.tick_params(axis="x", pad=12)
+            ax.set_ylim(0, 1.0)
+            ax.set_yticks([0.25, 0.50, 0.75])
+            ax.set_yticklabels(["25%", "50%", "75%"], fontsize=7, color="#aaa")
+            ax.spines["polar"].set_visible(False)
+
+        fig.subplots_adjust(left=0.08, right=0.92, top=0.88, bottom=0.05, wspace=0.30)
+        plt.close(fig)
+        return fig
 
     @output
     @render.ui
@@ -2836,7 +3610,7 @@ def server(input, output, session):
                 height=340,
             )
             return ui.HTML(fig.to_html(
-                full_html=False, include_plotlyjs="cdn",
+                full_html=False, include_plotlyjs=False,
                 config={"displayModeBar": False},
             ))
 
@@ -2911,7 +3685,7 @@ def server(input, output, session):
         )
 
         return ui.HTML(fig.to_html(
-            full_html=False, include_plotlyjs="cdn",
+            full_html=False, include_plotlyjs=False,
             config={
                 "displayModeBar": True,
                 "displaylogo": False,
@@ -3028,32 +3802,46 @@ def server(input, output, session):
         return fig
 
     @output
-    @render.plot
+    @render.ui
     def cmp_count_location():
+        from plotly.subplots import make_subplots
         pur = cmp_purdue_filtered()
         opp = cmp_opponent_filtered()
 
+        # 6 counts × 3 columns (info card | Purdue zone | Opponent zone).
         COUNTS = [
-            (0, 0, "0-0", "FIRST PITCH"),
-            (3, 0, "3-0", "HITTER'S COUNT"),
-            (0, 2, "0-2", "PITCHER AHEAD"),
-            (1, 2, "1-2", "PITCHER AHEAD"),
-            (2, 2, "2-2", "EVEN COUNT"),
-            (3, 2, "3-2", "FULL COUNT"),
+            (0, 0, "0-0"),
+            (1, 0, "1-0"),
+            (0, 1, "0-1"),
+            (0, 2, "0-2"),
+            (2, 2, "2-2"),
+            (3, 2, "3-2"),
         ]
         OUTCOME_COLORS = {
             "StrikeCalled":         "#22c55e",
             "StrikeSwinging":       "#ef4444",
             "Ball":                 "#475569",
-            "BallCalled":           "#475569",   
+            "BallCalled":           "#475569",
             "FoulBallFieldable":    "#f97316",
             "FoulBallNotFieldable": "#f97316",
             "InPlay":               "#3b82f6",
         }
+        OUTCOME_LABEL = {
+            "StrikeCalled":         "Called Strike",
+            "StrikeSwinging":       "Swinging Strike",
+            "Ball":                 "Ball",
+            "BallCalled":           "Ball",
+            "FoulBallFieldable":    "Foul",
+            "FoulBallNotFieldable": "Foul",
+            "InPlay":               "In Play",
+        }
         DEFAULT_COLOR = "#cbd5e1"
         STRIKE_EVENTS = {
             "StrikeCalled", "StrikeSwinging",
-            "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"
+            "FoulBallFieldable", "FoulBallNotFieldable", "InPlay",
+        }
+        SWING_EVENTS = {
+            "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay",
         }
 
         def _get_count_df(d, balls, strikes):
@@ -3069,216 +3857,324 @@ def server(input, output, session):
             )
             return d.loc[mask]
 
-        def _spct(df):
+        def _count_stats(df):
             if df is None or df.empty or "PitchCall" not in df.columns:
-                return None
+                return None, None, None, 0
             n = len(df)
             if n == 0:
-                return None
-            return 100 * df["PitchCall"].astype(str).isin(STRIKE_EVENTS).sum() / n
+                return None, None, None, 0
+            pc = df["PitchCall"].astype(str).str.strip()
+            str_pct = 100 * pc.isin(STRIKE_EVENTS).sum() / n
+            swings = pc.isin(SWING_EVENTS).sum()
+            whiff_pct = (100 * pc.eq("StrikeSwinging").sum() / swings) if swings else None
+            if "PlateLocSide" in df.columns and "PlateLocHeight" in df.columns:
+                side = pd.to_numeric(df["PlateLocSide"], errors="coerce")
+                height = pd.to_numeric(df["PlateLocHeight"], errors="coerce")
+                in_zone = (
+                    side.between(ZONE_LEFT, ZONE_RIGHT)
+                    & height.between(ZONE_BOTTOM, ZONE_TOP)
+                )
+                out_zone = (~in_zone) & side.notna() & height.notna()
+                n_out = out_zone.sum()
+                chase_pct = (100 * (out_zone & pc.isin(SWING_EVENTS)).sum() / n_out) if n_out > 0 else None
+            else:
+                chase_pct = None
+            return str_pct, whiff_pct, chase_pct, n
 
-        def _draw_zone(ax, df):
-            ax.set_facecolor("white")
-            ax.set_xlim(-1.5, 1.5)
-            ax.set_ylim(-0.55, 4.55)
-            ax.set_clip_on(True)
-            ax.patch.set_zorder(1)
-            ax.add_patch(Rectangle(
-                (-1.1, 1.2), 2.2, 2.6,
-                alpha=0.20, facecolor="#bfdbfe", edgecolor="none", zorder=2, clip_on=True
-            ))
-            ax.add_patch(Rectangle(
-                (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM,
-                fill=False, linewidth=2.0, edgecolor="#1e293b", zorder=2, clip_on=True
-            ))
+        pur_name = cmp_purdue_name() or "Purdue"
+        opp_name = cmp_opponent_name() or "Opponent"
 
-            mid_y = (ZONE_BOTTOM + ZONE_TOP) / 2
-            ax.plot([ZONE_LEFT, ZONE_RIGHT], [mid_y, mid_y],
-                    linestyle="--", linewidth=1.0, color="#60a5fa", alpha=0.6, zorder=1)
-            ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP],
-                    linestyle="--", linewidth=1.0, color="#f97316", alpha=0.6, zorder=1)
+        def _fmt(x): return f"{x:.0f}%" if x is not None else "—"
 
-            if df is not None and not df.empty:
-                loc = df[df["PlateLocSide"].notna() & df["PlateLocHeight"].notna()]
-                if not loc.empty:
-                    dot_colors = [
-                        OUTCOME_COLORS.get(str(pc).strip(), DEFAULT_COLOR)
-                        for pc in loc["PitchCall"].astype(str)
-                    ]
-                    ax.scatter(
-                        loc["PlateLocSide"], loc["PlateLocHeight"],
-                        s=70, alpha=0.90, color=dot_colors,
-                        edgecolors="white", linewidths=0.35,
-                        zorder=3, clip_on=True
-                    )
-
-            ax.add_patch(home_plate_polygon(y_front=0.10))
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.tick_params(length=0)
-            for spine in ax.spines.values():
-                spine.set_visible(True)
-                spine.set_edgecolor("#c8d0da")
-                spine.set_linewidth(1.2)
-
-        def _draw_info(ax, count_label, count_context, pur_s, opp_s, n_pur, n_opp):
-            ax.set_facecolor("white")
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            for spine in ax.spines.values():
-                spine.set_visible(True)
-                spine.set_edgecolor("#e2e8f0")
-                spine.set_linewidth(1.0)
-            ax.text(0.5, 0.80, count_label,
-                    ha="center", va="center",
-                    fontsize=26, fontweight="black", color="#1e293b",
-                    transform=ax.transAxes)
-            ax.text(0.5, 0.63, count_context,
-                    ha="center", va="center",
-                    fontsize=7, fontweight="bold", color="#64748b",
-                    transform=ax.transAxes)
-            ax.text(0.5, 0.49, "Strike Percentage",
-                    ha="center", va="center",
-                    fontsize=7, color="#94a3b8",
-                    transform=ax.transAxes)
-            pur_txt = f"{pur_s:.0f}%" if pur_s is not None else "—"
-            opp_txt = f"{opp_s:.0f}%" if opp_s is not None else "—"
-            ax.text(0.26, 0.33, pur_txt,
-                    ha="center", va="center",
-                    fontsize=9, fontweight="bold", color="#111827",
-                    transform=ax.transAxes,
-                    bbox=dict(boxstyle="round,pad=0.38",
-                              facecolor="#DDB945", edgecolor="none"))
-            ax.text(0.74, 0.33, opp_txt,
-                    ha="center", va="center",
-                    fontsize=9, fontweight="bold", color="white",
-                    transform=ax.transAxes,
-                    bbox=dict(boxstyle="round,pad=0.38",
-                              facecolor="#1e293b", edgecolor="none"))
-            ax.text(0.26, 0.17, f"n={n_pur}",
-                    ha="center", va="center",
-                    fontsize=7, color="#94a3b8",
-                    transform=ax.transAxes)
-            ax.text(0.74, 0.17, f"n={n_opp}",
-                    ha="center", va="center",
-                    fontsize=7, color="#94a3b8",
-                    transform=ax.transAxes)
-
-        # ── build figure ───────────────────────────────────────────────────────
-        pur_name = cmp_purdue_name() or "Purdue Pitcher"
-        opp_name = cmp_opponent_name() or "Opponent Pitcher"
-        n_rows   = len(COUNTS)
-        BG       = "#e8edf2"
-
-        from matplotlib.gridspec import GridSpec
-
-        fig = plt.figure(figsize=(10.0, 3.2 * n_rows + 0.8), facecolor=BG)
-
-        # Tiny legend row on top, data rows below
-        gs_outer = GridSpec(2, 1, figure=fig,
-                            height_ratios=[0.01, 0.96],
-                            hspace=0.0)
-
-        ax_leg = fig.add_subplot(gs_outer[0, 0])
-        ax_leg.set_facecolor(BG)
-        ax_leg.axis("off")
-        legend_items = [
-            ("Called Strike",   "#22c55e"),
-            ("Swinging Strike", "#ef4444"),
-            ("Ball",            "#475569"),
-            ("Foul",            "#f97316"),
-            ("In Play",         "#3b82f6"),
-        ]
-        legend_handles = [
-            plt.Line2D([0], [0], marker="o", color="w",
-                       markerfacecolor=c, markersize=8, label=lbl)
-            for lbl, c in legend_items
-        ]
-        leg = ax_leg.legend(
-            handles=legend_handles,
-            loc="center", ncol=5, fontsize=8.5,
-            bbox_to_anchor=(0.5, 0.10),
-            frameon=True, fancybox=False,
-            edgecolor="#cbd5e1", facecolor="white",
-            borderpad=0.5, handletextpad=0.4, columnspacing=0.9,
-        )
-        leg.get_frame().set_linewidth(0.8)
-
-        # Data rows
-        gs = GridSpec(
-            nrows=n_rows, ncols=3,
-            width_ratios=[0.55, 1.7, 1.7],
-            height_ratios=[1] * n_rows,
-            wspace=0.03, hspace=0.20,
-            left=0.015, right=0.985,
-            top=0.955, bottom=0.008,
-        )
-
-        row_axes     = []
-        first_pur_ax = None
-        first_opp_ax = None
-
-        for row_idx, (balls, strikes, count_label, count_context) in enumerate(COUNTS):
+        # Pre-compute stats per row for reuse
+        row_stats = []
+        for balls, strikes, _label in COUNTS:
             pur_cdf = _get_count_df(pur, balls, strikes)
             opp_cdf = _get_count_df(opp, balls, strikes)
-            pur_s   = _spct(pur_cdf)
-            opp_s   = _spct(opp_cdf)
-            n_pur   = len(pur_cdf) if not pur_cdf.empty else 0
-            n_opp   = len(opp_cdf) if not opp_cdf.empty else 0
+            p_s, p_w, p_c, p_n = _count_stats(pur_cdf)
+            o_s, o_w, o_c, o_n = _count_stats(opp_cdf)
+            row_stats.append({
+                "pur_cdf": pur_cdf, "opp_cdf": opp_cdf,
+                "p_s": p_s, "p_w": p_w, "p_c": p_c, "p_n": p_n,
+                "o_s": o_s, "o_w": o_w, "o_c": o_c, "o_n": o_n,
+            })
 
-            ax_info = fig.add_subplot(gs[row_idx, 0])
-            ax_pur  = fig.add_subplot(gs[row_idx, 1])
-            ax_opp  = fig.add_subplot(gs[row_idx, 2])
+        # Subplot titles — all three columns left empty. Info card already
+        # shows every stat; having them above each zone was redundant.
+        titles = ["" for _ in range(6 * 3)]
 
-            for ax in [ax_info, ax_pur, ax_opp]:
-                ax.set_facecolor("white")
-                for spine in ax.spines.values():
-                    spine.set_visible(False)
+        fig = make_subplots(
+            rows=6, cols=3,
+            column_widths=[0.22, 0.39, 0.39],
+            horizontal_spacing=0.02,
+            vertical_spacing=0.05,
+            subplot_titles=titles,
+        )
 
-            _draw_info(ax_info, count_label, count_context,
-                       pur_s, opp_s, n_pur, n_opp)
-            _draw_zone(ax_pur, pur_cdf)
-            _draw_zone(ax_opp, opp_cdf)
+        def _add_pitcher_dots(sub_df, row_i, col_i, pitcher_label):
+            if sub_df is None or sub_df.empty:
+                return
+            sub = sub_df[
+                sub_df["PlateLocSide"].notna() & sub_df["PlateLocHeight"].notna()
+            ].copy()
+            if sub.empty:
+                return
+            pc = sub["PitchCall"].astype(str).str.strip()
+            sub["_color"] = pc.map(OUTCOME_COLORS).fillna(DEFAULT_COLOR)
+            sub["_outcome"] = pc.map(OUTCOME_LABEL).fillna("Other")
+            pt_col = PITCH_TYPE_COL if PITCH_TYPE_COL in sub.columns else None
+            velo_col = "RelSpeed" if "RelSpeed" in sub.columns else None
+            custom = []
+            for _, r in sub.iterrows():
+                pt = str(r[pt_col]).strip() if pt_col else "—"
+                velo = r[velo_col] if velo_col else None
+                velo_txt = f"{float(velo):.1f} mph" if pd.notna(velo) else "—"
+                custom.append([pitcher_label, pt, velo_txt, r["_outcome"]])
 
-            row_axes.append((ax_info, ax_opp))
-            if row_idx == 0:
-                first_pur_ax = ax_pur
-                first_opp_ax = ax_opp
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["PlateLocSide"],
+                    y=sub["PlateLocHeight"],
+                    mode="markers",
+                    marker=dict(
+                        color=sub["_color"],
+                        size=10,
+                        line=dict(color="white", width=0.6),
+                        opacity=0.88,
+                    ),
+                    showlegend=False,
+                    customdata=custom,
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>"
+                        "Type: %{customdata[1]}<br>"
+                        "Velo: %{customdata[2]}<br>"
+                        "Outcome: %{customdata[3]}<br>"
+                        "Side: %{x:.2f} · Height: %{y:.2f}"
+                        "<extra></extra>"
+                    ),
+                ),
+                row=row_i, col=col_i,
+            )
 
-        # Player names + card borders after layout
-        fig.canvas.draw()
+        mid_y = (ZONE_BOTTOM + ZONE_TOP) / 2
+        hp_x = [-0.71, 0.71, 0.71, 0, -0.71]
+        hp_y = [0.95, 0.95, 1.15, 1.35, 1.15]
 
-        pp = first_pur_ax.get_position()
-        po = first_opp_ax.get_position()
-        name_y = pp.y1 + 0.005
-        fig.text((pp.x0 + pp.x1) / 2, name_y, pur_name,
-                 ha="center", va="bottom",
-                 fontsize=11, fontweight="bold", color="#1e293b",
-                 transform=fig.transFigure)
-        fig.text((po.x0 + po.x1) / 2, name_y, opp_name,
-                 ha="center", va="bottom",
-                 fontsize=11, fontweight="bold", color="#1e293b",
-                 transform=fig.transFigure)
+        def _axis_ref(row, col):
+            idx = (row - 1) * 3 + col
+            return ("x" if idx == 1 else f"x{idx}"), ("y" if idx == 1 else f"y{idx}")
 
-        PAD = 0.005
-        for i, (ax_left, ax_right) in enumerate(row_axes):
-            pl = ax_left.get_position()
-            pr = ax_right.get_position()
-            extra_top = 0.03 if i == 0 else 0.0   # extend first card to cover player name
-            fig.add_artist(FancyBboxPatch(
-                (pl.x0 - PAD, pl.y0 - PAD),
-                (pr.x1 - pl.x0) + 2 * PAD,
-                pl.height + 2 * PAD + extra_top,
-                boxstyle="round,pad=0.003",
-                facecolor="white", edgecolor="#c8d0da",
-                linewidth=1.1, transform=fig.transFigure,
-                zorder=0, clip_on=False,
-            ))
+        for row_idx, (balls, strikes, label) in enumerate(COUNTS, start=1):
+            s = row_stats[row_idx - 1]
 
-        plt.close(fig)
-        return fig
+            # --- Col 1: info panel -----------------------------------------
+            # Placeholder trace so Plotly builds the subplot axes for this cell
+            fig.add_trace(
+                go.Scatter(x=[None], y=[None], mode="markers",
+                           showlegend=False, hoverinfo="skip"),
+                row=row_idx, col=1,
+            )
+            fig.update_xaxes(
+                visible=False, range=[0, 1], fixedrange=True,
+                row=row_idx, col=1,
+            )
+            fig.update_yaxes(
+                visible=False, range=[0, 1], fixedrange=True,
+                row=row_idx, col=1,
+            )
+
+            x_ref_1, y_ref_1 = _axis_ref(row_idx, 1)
+
+            # Big count number (top — slightly lower so it sits under the
+            # player-name header with less empty space above)
+            fig.add_annotation(
+                x=0.5, y=0.88, xref=x_ref_1, yref=y_ref_1,
+                text=f"<b>{label}</b>", showarrow=False,
+                font=dict(size=26, color="#1e293b"),
+            )
+
+            # Vertical stack: three metric blocks (Strike / Whiff / Chase)
+            # with breathing room between each group + a final row for n.
+            metric_rows = [
+                ("Strike Percentage", s["p_s"], s["o_s"]),
+                ("Whiff Percentage",  s["p_w"], s["o_w"]),
+                ("Chase Percentage",  s["p_c"], s["o_c"]),
+            ]
+            # y-positions: bigger gaps between metric groups
+            header_ys = [0.70, 0.46, 0.22]
+            value_ys  = [0.60, 0.36, 0.12]
+
+            # Pills sit symmetric and close to center so everything in the
+            # info card lines up on the vertical midline.
+            pill_x_left, pill_x_right = 0.35, 0.65
+
+            for (label_text, p_val, o_val), header_y, val_y in zip(
+                metric_rows, header_ys, value_ys,
+            ):
+                fig.add_annotation(
+                    x=0.5, y=header_y, xref=x_ref_1, yref=y_ref_1,
+                    text=label_text, showarrow=False,
+                    font=dict(size=10, color="#64748b"),
+                )
+                fig.add_annotation(
+                    x=pill_x_left, y=val_y, xref=x_ref_1, yref=y_ref_1,
+                    text=f"<b>{_fmt(p_val)}</b>", showarrow=False,
+                    font=dict(size=13, color="#111827"),
+                    bgcolor="#DDB945", bordercolor="#DDB945",
+                    borderpad=4, borderwidth=0,
+                )
+                fig.add_annotation(
+                    x=pill_x_right, y=val_y, xref=x_ref_1, yref=y_ref_1,
+                    text=f"<b>{_fmt(o_val)}</b>", showarrow=False,
+                    font=dict(size=13, color="#ffffff"),
+                    bgcolor="#1e293b", bordercolor="#1e293b",
+                    borderpad=4, borderwidth=0,
+                )
+
+            # Sample sizes at the bottom, aligned with the pills above
+            fig.add_annotation(
+                x=pill_x_left, y=0.03, xref=x_ref_1, yref=y_ref_1,
+                text=f"n = {s['p_n']}", showarrow=False,
+                font=dict(size=10, color="#94a3b8"),
+            )
+            fig.add_annotation(
+                x=pill_x_right, y=0.03, xref=x_ref_1, yref=y_ref_1,
+                text=f"n = {s['o_n']}", showarrow=False,
+                font=dict(size=10, color="#94a3b8"),
+            )
+
+            # --- Cols 2, 3: zone charts ------------------------------------
+            for col_idx, (df_src, pitcher_label) in enumerate(
+                [(pur, pur_name), (opp, opp_name)], start=2,
+            ):
+                fig.add_shape(
+                    type="rect",
+                    x0=ZONE_LEFT, y0=ZONE_BOTTOM,
+                    x1=ZONE_RIGHT, y1=ZONE_TOP,
+                    line=dict(color="#1e293b", width=2),
+                    fillcolor="rgba(0,0,0,0)",
+                    row=row_idx, col=col_idx,
+                )
+                fig.add_shape(
+                    type="line",
+                    x0=ZONE_LEFT, y0=mid_y, x1=ZONE_RIGHT, y1=mid_y,
+                    line=dict(color="#60a5fa", width=1, dash="dash"),
+                    row=row_idx, col=col_idx,
+                )
+                fig.add_shape(
+                    type="line",
+                    x0=0, y0=ZONE_BOTTOM, x1=0, y1=ZONE_TOP,
+                    line=dict(color="#f97316", width=1, dash="dash"),
+                    row=row_idx, col=col_idx,
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=hp_x + [hp_x[0]], y=hp_y + [hp_y[0]],
+                        mode="lines", fill="toself",
+                        fillcolor="rgba(255,255,255,0.85)",
+                        line=dict(color="#555", width=1),
+                        showlegend=False, hoverinfo="skip",
+                    ),
+                    row=row_idx, col=col_idx,
+                )
+
+                cdf = _get_count_df(df_src, balls, strikes)
+                _add_pitcher_dots(cdf, row_idx, col_idx, pitcher_label)
+
+                # Axes: narrower x-range for a taller-feeling zone, independent zoom
+                xref_z, _ = _axis_ref(row_idx, col_idx)
+                fig.update_xaxes(
+                    range=[ZONE_LEFT - 0.55, ZONE_RIGHT + 0.55],
+                    showgrid=True, gridcolor="rgba(0,0,0,0.05)",
+                    zeroline=False, showticklabels=False,
+                    row=row_idx, col=col_idx,
+                )
+                fig.update_yaxes(
+                    range=[ZONE_BOTTOM - 0.7, ZONE_TOP + 0.7],
+                    showgrid=True, gridcolor="rgba(0,0,0,0.05)",
+                    zeroline=False, showticklabels=False,
+                    scaleanchor=xref_z, scaleratio=1,
+                    row=row_idx, col=col_idx,
+                )
+
+        # --- Legend entries (outcome colors) -------------------------------
+        for outcome_label, color in [
+            ("Called Strike", "#22c55e"),
+            ("Swinging Strike", "#ef4444"),
+            ("Ball", "#475569"),
+            ("Foul", "#f97316"),
+            ("In Play", "#3b82f6"),
+        ]:
+            fig.add_trace(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode="markers",
+                    marker=dict(color=color, size=11, symbol="circle"),
+                    name=outcome_label,
+                    legendgroup="outcome",
+                    showlegend=True,
+                ),
+                row=1, col=2,
+            )
+
+        fig.update_layout(
+            paper_bgcolor="#f7f7f7",
+            plot_bgcolor="white",
+            height=2150,  # taller rows so 3 stacked metric blocks + n row breathe
+            margin=dict(l=10, r=10, t=85, b=30),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom", y=1.045,
+                xanchor="center", x=0.5,
+                font=dict(size=12),
+                traceorder="normal",
+                itemsizing="constant",
+                bgcolor="rgba(255,255,255,0.95)",
+                bordercolor="#c8d0da",
+                borderwidth=1,
+            ),
+            showlegend=True,
+            dragmode="zoom",
+        )
+
+        # Shrink subplot-title text so it fits above narrower columns
+        for ann in fig.layout.annotations:
+            # Paper-coord annotations we add later keep their own fonts; style
+            # only the subplot-title annotations (which use xref/yref of subplots).
+            if ann.xref == "paper":
+                continue
+            if ann.font is None or ann.font.size is None:
+                ann.font = dict(size=10, color="#1e293b")
+                ann.align = "center"
+
+        # Column headers (player names) — placed above the subplot titles,
+        # below the legend. Centered above cols 2 and 3.
+        # Col-2 domain center ≈ 0.42 (0.18 info + 0.02 gap + 0.20 into col 2)
+        # Col-3 domain center ≈ 0.81
+        fig.add_annotation(
+            x=0.43, y=1.005, xref="paper", yref="paper",
+            xanchor="center", yanchor="bottom",
+            text=f"<b style='color:#1e293b'>{pur_name}</b>",
+            showarrow=False, font=dict(size=16),
+        )
+        fig.add_annotation(
+            x=0.82, y=1.005, xref="paper", yref="paper",
+            xanchor="center", yanchor="bottom",
+            text=f"<b style='color:#1e293b'>{opp_name}</b>",
+            showarrow=False, font=dict(size=16),
+        )
+
+        return ui.HTML(fig.to_html(
+            full_html=False, include_plotlyjs=False,
+            config={
+                "displayModeBar": True, "displaylogo": False, "scrollZoom": True,
+                "modeBarButtonsToRemove": [
+                    "toImage", "select2d", "lasso2d",
+                    "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
+                ],
+            },
+        ))
+
 
     
     def _find_col(df, candidates):
@@ -3414,6 +4310,182 @@ def server(input, output, session):
             "ncaa_percentile": "—"
         }
 
+
+    @output
+    @output
+    @output
+    @render.ui
+    def cmp_batter_takeaways():
+        pur_df = cmp_batter_purdue_df()
+        opp_df = cmp_batter_opponent_df()
+        pur_name = cmp_batter_purdue_name()
+        opp_name = cmp_batter_opponent_name()
+        bid_pur = input.player() if input.player_type() == "batter" else None
+        try:
+            bid_opp = input.cmp_opponent_batter()
+        except Exception:
+            bid_opp = None
+
+        pur_s = compute_batter_stats(pur_df, bid_pur) if bid_pur else {}
+        opp_s = compute_batter_stats(opp_df, bid_opp) if bid_opp else {}
+
+        if not pur_s or not opp_s or not pur_s.get("PA") or not opp_s.get("PA"):
+            return ui.div("Select both batters to see takeaways.",
+                          style="font-size:12px;color:#888;padding:12px;font-style:italic;")
+
+        SW = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        CT = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+        def _disc(df, bid):
+            if df is None or df.empty or not bid:
+                return {}
+            d = df[df["BatterId"].astype(str) == str(bid)].copy()
+            if d.empty:
+                return {}
+            pc = d["PitchCall"].astype(str).str.strip() if "PitchCall" in d.columns else pd.Series("", index=d.index)
+            total_sw = pc.isin(SW).sum()
+            total_whiff = (pc == "StrikeSwinging").sum()
+            total_ct = pc.isin(CT).sum()
+            result = {
+                "whiff": total_whiff / total_sw if total_sw > 0 else 0,
+                "contact": total_ct / total_sw if total_sw > 0 else 0,
+            }
+            if "PlateLocSide" in d.columns and "PlateLocHeight" in d.columns:
+                lh = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+                ls = pd.to_numeric(d["PlateLocSide"], errors="coerce")
+                iz = lh.between(ZONE_BOTTOM, ZONE_TOP) & ls.between(ZONE_LEFT, ZONE_RIGHT)
+                oz = ~iz & lh.notna() & ls.notna()
+                n_iz = iz.sum()
+                n_oz = oz.sum()
+                result["zone_sw"] = (iz & pc.isin(SW)).sum() / n_iz if n_iz > 0 else 0
+                result["chase"] = (oz & pc.isin(SW)).sum() / n_oz if n_oz > 0 else 0
+            return result
+
+        pur_d = _disc(pur_df, bid_pur)
+        opp_d = _disc(opp_df, bid_opp)
+
+        insights = []
+
+        # OPS comparison
+        pur_ops = pur_s.get("OPS")
+        opp_ops = opp_s.get("OPS")
+        if pur_ops is not None and opp_ops is not None:
+            if pur_ops > opp_ops + 0.05:
+                insights.append(f"{pur_name} is more productive overall "
+                                f"({pur_ops:.3f} OPS vs {opp_ops:.3f})")
+            elif opp_ops > pur_ops + 0.05:
+                insights.append(f"{opp_name} is more productive overall "
+                                f"({opp_ops:.3f} OPS vs {pur_ops:.3f})")
+            else:
+                insights.append(f"Similar overall production — "
+                                f"{pur_name} {pur_ops:.3f} OPS vs {opp_name} {opp_ops:.3f}")
+
+        # BA comparison
+        pur_ba = pur_s.get("BA")
+        opp_ba = opp_s.get("BA")
+        if pur_ba is not None and opp_ba is not None and abs(pur_ba - opp_ba) > 0.03:
+            better = pur_name if pur_ba > opp_ba else opp_name
+            higher = max(pur_ba, opp_ba)
+            lower = min(pur_ba, opp_ba)
+            insights.append(f"{better} has the higher batting average "
+                            f"(.{int(round(higher*1000)):03d} vs .{int(round(lower*1000)):03d})")
+
+        # Discipline comparison
+        if pur_d and opp_d:
+            pur_chase = pur_d.get("chase", 0)
+            opp_chase = opp_d.get("chase", 0)
+            if abs(pur_chase - opp_chase) > 0.05:
+                more_disc = pur_name if pur_chase < opp_chase else opp_name
+                less_disc = opp_name if pur_chase < opp_chase else pur_name
+                insights.append(f"{more_disc} is more disciplined — "
+                                f"chases {min(pur_chase,opp_chase):.0%} vs {max(pur_chase,opp_chase):.0%}")
+
+            pur_whiff = pur_d.get("whiff", 0)
+            opp_whiff = opp_d.get("whiff", 0)
+            if abs(pur_whiff - opp_whiff) > 0.05:
+                better_contact = pur_name if pur_whiff < opp_whiff else opp_name
+                insights.append(f"{better_contact} makes more contact — "
+                                f"{min(pur_whiff,opp_whiff):.0%} whiff rate vs {max(pur_whiff,opp_whiff):.0%}")
+
+        # K and BB comparison
+        pur_k = pur_s.get("K", 0)
+        opp_k = opp_s.get("K", 0)
+        pur_bb = pur_s.get("BB", 0)
+        opp_bb = opp_s.get("BB", 0)
+        if pur_k + opp_k > 0 and abs(pur_k - opp_k) > 2:
+            more_k = pur_name if pur_k > opp_k else opp_name
+            insights.append(f"{more_k} strikes out more ({max(pur_k,opp_k)} K vs {min(pur_k,opp_k)})")
+
+        if not insights:
+            return ui.div("Not enough data to generate takeaways.",
+                          style="font-size:12px;color:#888;padding:12px;font-style:italic;")
+
+        items = []
+        for insight in insights[:5]:
+            items.append(ui.tags.div(
+                ui.tags.span("•", style="color:#CDA735;font-weight:900;margin-right:8px;font-size:16px;"),
+                insight,
+                style="font-size:12px;line-height:1.6;color:#333;padding:4px 0;",
+            ))
+
+        return ui.div(*items, style="padding:12px 16px;")
+
+    @output
+    @render.ui
+    def cmp_player_select():
+        ptype = input.player_type()
+        if ptype == "batter":
+            return ui.input_select("cmp_opponent_batter", "Opponent Batter", choices={})
+        else:
+            return ui.TagList(
+                ui.input_select("cmp_opponent_pitcher", "Opponent Pitcher", choices={}),
+                ui.input_select(
+                    "cmp_pitch_type",
+                    "Pitch Type Comparison",
+                    choices={"all": "All Pitches"},
+                    selected="all",
+                ),
+            )
+
+    @output
+    @render.ui
+    def cmp_content():
+        ptype = input.player_type()
+
+        if ptype == "batter":
+            return ui.div(
+                ui.output_ui("cmp_batter_batting_line"),
+                ui.div(
+                    ui.div("Out Rate Comparison", class_="team-summary-title"),
+                    ui.output_plot("cmp_batter_out_rate", height="500px"),
+                    class_="team-summary-wrap",
+                ),
+                ui.div(
+                    ui.div("Pitch Results Comparison", class_="team-summary-title"),
+                    ui.output_ui("cmp_batter_pitch_results"),
+                    class_="team-summary-wrap",
+                ),
+                ui.div(
+                    ui.div("Plate Discipline Comparison", class_="team-summary-title"),
+                    ui.output_plot("cmp_batter_radar", height="450px"),
+                    class_="team-summary-wrap",
+                ),
+                ui.div(
+                    ui.div("Key Takeaways", class_="team-summary-title"),
+                    ui.output_ui("cmp_batter_takeaways"),
+                    class_="team-summary-wrap",
+                ),
+            )
+        else:
+            return ui.div(
+                ui.output_ui("cmp_team_summary_table"),
+                ui.output_ui("cmp_summary_cards"),
+                ui.div(
+                    ui.div("Location by Count", class_="team-summary-title"),
+                    ui.output_ui("cmp_count_location"),
+                    class_="team-summary-wrap",
+                ),
+            )
 
     @output
     @render.ui
@@ -3593,22 +4665,27 @@ def server(input, output, session):
                     ui.div(
                         ui.div(
                             ui.input_select("cmp_opponent_team", "Opponent Team", choices={}),
-                            ui.input_select("cmp_opponent_pitcher", "Opponent Pitcher", choices={}),
-                            ui.input_select(
-                                "cmp_pitch_type",
-                                "Pitch Type Comparison",
-                                choices={"all": "All Pitches"},
-                                selected="all",
-                            ),
+                            ui.output_ui("cmp_player_select"),
                             class_="cmp-filter-row",
                         ),
-                        ui.output_ui("cmp_team_summary_table"),
-                        ui.output_ui("cmp_summary_cards"),
+                        ui.output_ui("cmp_content"),
+                        class_="panel",
+                    ),
+                ),
+                ui.nav_panel(
+                    "Prediction",
+                    ui.div(
+                        ui.div("Prediction", class_="profile-title"),
                         ui.div(
-                            ui.div("Location by Count", class_="team-summary-title"),
-                            ui.output_plot("cmp_count_location", height = "2600px"),
-                            class_="team-summary-wrap",
+                            ui.input_action_button(
+                                "retrain_prediction_models",
+                                "Retrain Prediction Models",
+                                class_="btn btn-sm btn-outline-dark",
+                            ),
+                            style="display:flex;justify-content:flex-end;margin:2px 0 10px 0;",
                         ),
+                        ui.output_ui("prediction_content"),
+                        ui.output_ui("prediction_table_section"),
                         class_="panel",
                     ),
                 ),
@@ -3625,6 +4702,78 @@ def server(input, output, session):
     @output
     @render.ui
     def home_content():
+        # HitTrax batter profile (session-aggregated, separate data source)
+        if input.data_source() == "hittrax":
+            if input.player_type() == "pitcher":
+                return ui.div("⚠️  HitTrax only contains batter data. Switch Player Type to Batter to view the profile.", style=(
+                    "padding:14px 18px; border-radius:8px; background:#fef9ec;"
+                    "border:1.5px solid #DDB945; color:#6b4e00;"
+                    "font-size:15px; font-weight:700; margin-top:12px;"
+                ))
+            d = hittrax_data_active()
+            if d is None or d.empty:
+                return ui.div(
+                    "No HitTrax sessions found for the selected player and date range.",
+                    style="text-align:center;margin-top:30px;color:#666;",
+                )
+            def card_header(title, wrap_id):
+                return ui.tags.div(
+                    title,
+                    ui.tags.span("⛶", class_="expand-btn",
+                                 onclick=f"expandChart('{title}','{wrap_id}')",
+                                 title="Expand"),
+                    style=(
+                        "font-size:13px;font-weight:700;color:#444;"
+                        "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                        "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                        "position:relative;"
+                    ),
+                )
+
+            return ui.TagList(
+                # Season Totals card
+                ui.div(
+                    ui.div("Season Totals", style=(
+                        "font-size:13px;font-weight:700;color:#444;"
+                        "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                        "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                    )),
+                    ui.output_ui("hittrax_aggregate_stats"),
+                    class_="card",
+                    style="margin-bottom:14px;",
+                ),
+                # Max Distance per Session (full width, click-to-select)
+                ui.div(
+                    card_header("Max Distance per Session", "hittrax-dist-wrap"),
+                    ui.tags.div(
+                        ui.output_plot("hittrax_max_distance_plot", height="380px", click=True),
+                        id="hittrax-dist-wrap",
+                    ),
+                    class_="card",
+                    style="margin-bottom:14px;",
+                ),
+                # Batted Ball Mix (full width, click-to-select)
+                ui.div(
+                    card_header("Batted Ball Mix (per session)", "hittrax-mix-wrap"),
+                    ui.tags.div(
+                        ui.output_plot("hittrax_batted_ball_mix_plot", height="380px", click=True),
+                        id="hittrax-mix-wrap",
+                    ),
+                    class_="card",
+                    style="margin-bottom:14px;",
+                ),
+                # Session Log (full width)
+                ui.div(
+                    ui.div("Session Log", style=(
+                        "font-size:13px;font-weight:700;color:#444;"
+                        "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                        "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                    )),
+                    ui.output_ui("hittrax_session_log"),
+                    class_="card",
+                ),
+            )
+
         df = current_df()
         team = input.team()
         if df is None or df.empty:
@@ -3702,85 +4851,140 @@ def server(input, output, session):
                         class_="card",
                         style="margin-bottom:14px;",
                     ),
+                    # Row 3: Out Rate + Pitch Results (side by side, full width)
                     ui.div(
-                        # Left column: Location
+                        # Out Rate by Zone
                         ui.div(
-                            ui.div(
-                                ui.div("Pitch Location by Result", style=(
+                            ui.tags.div(
+                                ui.tags.span(
+                                    "Out Rate by Zone",
+                                    ui.tags.span("i", class_="tip-icon"),
+                                    class_="stat-tip",
+                                    **{"data-stat-key": "__out_rate__"},
+                                ),
+                                ui.tags.span("⛶", class_="expand-btn",
+                                             onclick="expandChart('Out Rate by Zone','batter-outrate-wrap')",
+                                             title="Expand"),
+                                style=(
                                     "font-size:13px;font-weight:700;color:#444;"
                                     "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
                                     "background:#f3f3f3;border-radius:10px 10px 0 0;"
-                                )),
-                                ui.output_plot("batter_location_plot", height=LOC_H),
-                                ui.div(
-                                    ui.tags.div(
-                                        "Each cell shows the swing rate and how often the batter swings at pitches in that location.",
-                                        style="margin-bottom:6px;",
-                                    ),
-                                    ui.tags.div(
-                                        ui.tags.span("Red", style="color:#c0392b;font-weight:700;"),
-                                        " = attack zone, swings almost every time (75%+)",
-                                    ),
-                                    ui.tags.div(
-                                        ui.tags.span("Gold", style="color:#d4a017;font-weight:700;"),
-                                        " = swings more often than not (50-75%)",
-                                    ),
-                                    ui.tags.div(
-                                        ui.tags.span("Light", style="color:#b8860b;font-weight:700;"),
-                                        " = cautious (25-50%)",
-                                    ),
-                                    ui.tags.div(
-                                        ui.tags.span("White", style="color:#888;font-weight:700;"),
-                                        " = rarely swings (<25%)",
-                                    ),
-                                    style=(
-                                        "font-size:11px;color:#666;line-height:1.5;"
-                                        "padding:10px 14px;border-top:1px solid #e0e0e0;"
-                                        "background:#fafafa;"
-                                    ),
+                                    "position:relative;"
                                 ),
-                                class_="card",
                             ),
-                        ),
-                        # Right column: Spray + EV/LA + Radar/Dist
-                        ui.div(
+                            ui.tags.div(
+                                ui.output_plot("batter_out_rate_plot", height="600px"),
+                                id="batter-outrate-wrap",
+                            ),
                             ui.div(
-                                ui.div("Spray Chart", style=(
+                                ui.tags.div(
+                                    ui.tags.span("Red", style="color:#c0392b;font-weight:700;"),
+                                    ": danger zone, gets out 75%+ of the time",
+                                ),
+                                ui.tags.div(
+                                    ui.tags.span("Gold", style="color:#d4a017;font-weight:700;"),
+                                    ": gets out more often than not (50 - 75%)",
+                                ),
+                                ui.tags.div(
+                                    ui.tags.span("Light", style="color:#b8860b;font-weight:700;"),
+                                    ": moderate (25 - 50%)",
+                                ),
+                                ui.tags.div(
+                                    ui.tags.span("White", style="color:#888;font-weight:700;"),
+                                    ": productive zone (< 25%)",
+                                ),
+                                style=(
+                                    "font-size:11px;color:#666;line-height:1.5;"
+                                    "padding:10px 14px;border-top:1px solid #e0e0e0;"
+                                    "background:#fafafa;"
+                                ),
+                            ),
+                            class_="card",
+                        ),
+                        # Pitch Results scatter
+                        ui.div(
+                            ui.tags.div(
+                                "Pitch Results",
+                                ui.tags.span("⛶", class_="expand-btn",
+                                             onclick="expandChart('Pitch Results','batter-pitchresults-wrap')",
+                                             title="Expand"),
+                                style=(
                                     "font-size:13px;font-weight:700;color:#444;"
                                     "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
                                     "background:#f3f3f3;border-radius:10px 10px 0 0;"
-                                )),
-                                ui.output_plot("batter_spray_plot", height=SPRAY_H),
-                                class_="card",
-                            ),
-                            ui.div(
-                                ui.div(
-                                    ui.div(
-                                        ui.div("Exit Velo vs. Launch Angle", style=(
-                                            "font-size:13px;font-weight:700;color:#444;"
-                                            "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
-                                            "background:#f3f3f3;border-radius:10px 10px 0 0;"
-                                        )),
-                                        ui.output_plot("batter_ev_la_plot", height=PLOT_H),
-                                        class_="card",
-                                    ),
-                                    ui.div(
-                                        ui.div(bot_title, style=(
-                                            "font-size:13px;font-weight:700;color:#444;"
-                                            "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
-                                            "background:#f3f3f3;border-radius:10px 10px 0 0;"
-                                        )),
-                                        ui.output_plot(bot_plot, height=PLOT_H),
-                                        class_="card",
-                                    ),
-                                    style="display:grid;grid-template-columns:1fr 1fr;gap:14px;",
+                                    "position:relative;"
                                 ),
                             ),
-                            style="display:flex;flex-direction:column;gap:14px;",
+                            ui.tags.div(
+                                ui.output_ui("batter_pitch_results_plot"),
+                                id="batter-pitchresults-wrap",
+                            ),
+                            class_="card",
                         ),
-                        style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;",
+                        style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;",
                     ),
-                    # Scout Insights (full-width, below charts)
+                    # Row 4: Spray Chart | Exit Velo vs LA | Plate Discipline (3 columns)
+                    ui.div(
+                        ui.div(
+                            ui.tags.div(
+                                "Spray Chart",
+                                ui.tags.span("⛶", class_="expand-btn",
+                                             onclick="expandChart('Spray Chart','batter-spray-wrap')",
+                                             title="Expand"),
+                                style=(
+                                    "font-size:13px;font-weight:700;color:#444;"
+                                    "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                                    "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                                    "position:relative;"
+                                ),
+                            ),
+                            ui.tags.div(
+                                ui.output_plot("batter_spray_plot", height=PLOT_H),
+                                id="batter-spray-wrap",
+                            ),
+                            class_="card",
+                        ),
+                        ui.div(
+                            ui.tags.div(
+                                "Exit Velo vs. Launch Angle",
+                                ui.tags.span("⛶", class_="expand-btn",
+                                             onclick="expandChart('Exit Velo vs. Launch Angle','batter-evla-wrap')",
+                                             title="Expand"),
+                                style=(
+                                    "font-size:13px;font-weight:700;color:#444;"
+                                    "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                                    "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                                    "position:relative;"
+                                ),
+                            ),
+                            ui.tags.div(
+                                ui.output_plot("batter_ev_la_plot", height=PLOT_H),
+                                id="batter-evla-wrap",
+                            ),
+                            class_="card",
+                        ),
+                        ui.div(
+                            ui.tags.div(
+                                bot_title,
+                                ui.tags.span("⛶", class_="expand-btn",
+                                             onclick=f"expandChart('{bot_title}','batter-bot-wrap')",
+                                             title="Expand"),
+                                style=(
+                                    "font-size:13px;font-weight:700;color:#444;"
+                                    "padding:8px 12px;border-bottom:1px solid #e0e0e0;"
+                                    "background:#f3f3f3;border-radius:10px 10px 0 0;"
+                                    "position:relative;"
+                                ),
+                            ),
+                            ui.tags.div(
+                                ui.output_plot(bot_plot, height=PLOT_H),
+                                id="batter-bot-wrap",
+                            ),
+                            class_="card",
+                        ),
+                        style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:14px;",
+                    ),
+                    # Scout Insights (full-width)
                     ui.div(
                         ui.div("Scout Insights", style=(
                             "font-size:13px;font-weight:700;color:#444;"
@@ -3789,7 +4993,6 @@ def server(input, output, session):
                         )),
                         ui.output_ui("batter_scout_insights"),
                         class_="card",
-                        style="margin-top:14px;",
                     ),
                 ),
             )
@@ -3806,9 +5009,36 @@ def server(input, output, session):
 
         rows = [
             ui.row(
-                ui.column(4, ui.card(ui.card_header("Pitch Usage"),     ui.output_plot("pie",      height="340px"))),
-                ui.column(4, ui.card(ui.card_header("Pitch Locations"), ui.output_plot("location", height="340px"))),
-                ui.column(4, ui.card(ui.card_header("Pitch Movements"), ui.output_ui("movement"))),
+                ui.column(4, ui.card(
+                    ui.tags.div(
+                        "Pitch Usage",
+                        ui.tags.span("⛶", class_="expand-btn",
+                                     onclick="expandChart('Pitch Usage','pie')",
+                                     title="Expand"),
+                        class_="card-header", style="position:relative;",
+                    ),
+                    ui.tags.div(ui.output_plot("pie", height="340px"), id="pie"),
+                )),
+                ui.column(4, ui.card(
+                    ui.tags.div(
+                        "Pitch Locations",
+                        ui.tags.span("⛶", class_="expand-btn",
+                                     onclick="expandChart('Pitch Locations','location-wrap')",
+                                     title="Expand"),
+                        class_="card-header", style="position:relative;",
+                    ),
+                    ui.tags.div(ui.output_ui("location"), id="location-wrap"),
+                )),
+                ui.column(4, ui.card(
+                    ui.tags.div(
+                        "Pitch Movements",
+                        ui.tags.span("⛶", class_="expand-btn",
+                                     onclick="expandChart('Pitch Movements','movement-wrap')",
+                                     title="Expand"),
+                        class_="card-header", style="position:relative;",
+                    ),
+                    ui.tags.div(ui.output_ui("movement"), id="movement-wrap"),
+                )),
             ),
             ui.row(
                 ui.column(12, ui.card(
@@ -3879,77 +5109,126 @@ def server(input, output, session):
         return fig
 
     @output
-    @render.plot
+    @render.ui
     def location():
         loc = pitcher_loc_data()
         colors = pitch_colors()
 
-        fig, ax = plt.subplots(figsize=FIG_SIZE)
-        fig.patch.set_facecolor("#f7f7f7")
-        ax.set_facecolor("#f7f7f7")
+        fig = go.Figure()
 
         if loc is None or loc.empty:
-            ax.text(0.5, 0.5, "No pitch location data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-            plt.close(fig)
-            return fig
-
-        ax.add_patch(Rectangle(
-            (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
-            (ZONE_RIGHT - ZONE_LEFT) + 0.6,
-            (ZONE_TOP - ZONE_BOTTOM) + 0.6,
-            alpha=0.25
-        ))
-        ax.add_patch(Rectangle(
-            (ZONE_LEFT, ZONE_BOTTOM),
-            ZONE_RIGHT - ZONE_LEFT,
-            ZONE_TOP - ZONE_BOTTOM,
-            fill=False,
-            linewidth=2
-        ))
-
-        ax.plot([ZONE_LEFT, ZONE_RIGHT], [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2, linestyle="--", linewidth=1)
-        ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP], linestyle="--", linewidth=1)
+            fig.add_annotation(
+                text="No pitch location data",
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                showarrow=False, font=dict(size=14, color="#555555"),
+            )
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            fig.update_layout(
+                paper_bgcolor="#f7f7f7", plot_bgcolor="#f7f7f7",
+                margin=dict(l=20, r=20, t=20, b=20), height=340,
+            )
+            return ui.HTML(fig.to_html(
+                full_html=False, include_plotlyjs=False,
+                config={"displayModeBar": False},
+            ))
 
         sel = selected_pitch.get()
 
+        # Shadow zone
+        fig.add_shape(type="rect",
+            x0=ZONE_LEFT - 0.3, y0=ZONE_BOTTOM - 0.3,
+            x1=ZONE_RIGHT + 0.3, y1=ZONE_TOP + 0.3,
+            fillcolor="rgba(200,200,200,0.25)", line=dict(width=0),
+            layer="below",
+        )
+        # Strike zone
+        fig.add_shape(type="rect",
+            x0=ZONE_LEFT, y0=ZONE_BOTTOM,
+            x1=ZONE_RIGHT, y1=ZONE_TOP,
+            line=dict(color="black", width=2), fillcolor="rgba(0,0,0,0)",
+        )
+        # Cross lines
+        mid_y = (ZONE_BOTTOM + ZONE_TOP) / 2
+        fig.add_shape(type="line",
+            x0=ZONE_LEFT, y0=mid_y, x1=ZONE_RIGHT, y1=mid_y,
+            line=dict(color="gray", width=1, dash="dash"),
+        )
+        fig.add_shape(type="line",
+            x0=0, y0=ZONE_BOTTOM, x1=0, y1=ZONE_TOP,
+            line=dict(color="gray", width=1, dash="dash"),
+        )
+
+        # Home plate
+        hp_x = [-0.35, -0.35, 0, 0.35, 0.35]
+        hp_y = [0.3, 0.1, 0, 0.1, 0.3]
+        fig.add_trace(go.Scatter(
+            x=hp_x + [hp_x[0]], y=hp_y + [hp_y[0]],
+            mode="lines", fill="toself",
+            fillcolor="rgba(255,255,255,0.8)",
+            line=dict(color="#555", width=1),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+        # Pitch dots
         for pt, g in loc.groupby(PITCH_TYPE_COL):
-            x = g["PlateLocSide"]
-            y = g["PlateLocHeight"]
-            color = colors.get(pt, (0.5, 0.5, 0.5))
+            color = colors.get(pt, "#888888")
+            is_selected = (sel == pt)
+            opacity = 1.0 if (not sel or is_selected) else 0.15
+            size = 10 if is_selected else 7
 
-            if sel and pt == sel:
-                ax.scatter(
-                    x,
-                    y,
-                    s=130,
-                    alpha=0.18,
-                    color=color,
-                    linewidths=0,
-                    zorder=1,
-                )
+            g_plot = g.sample(n=min(len(g), 50), random_state=42) if len(g) > 50 else g
 
-            ax.scatter(
-                x,
-                y,
-                s=70 if sel and pt == sel else 35,
-                alpha=1.0 if (not sel or pt == sel) else 0.18,
-                color=color,
-                edgecolors="black",
-                linewidths=0.5,
-                zorder=3 if sel and pt == sel else 2,
-            )
+            fig.add_trace(go.Scatter(
+                x=g_plot["PlateLocSide"],
+                y=g_plot["PlateLocHeight"],
+                mode="markers",
+                name=pt,
+                showlegend=False,
+                hovertemplate=(
+                    f"{pt}<br>"
+                    "Side: %{x:.2f}<br>"
+                    "Height: %{y:.2f}<extra></extra>"
+                ),
+                marker=dict(
+                    size=size, color=color, opacity=opacity,
+                    line=dict(
+                        color="black" if (not sel or is_selected) else color,
+                        width=0.5 if (not sel or is_selected) else 0,
+                    ),
+                ),
+            ))
 
-        ax.add_patch(home_plate_polygon(y_front=0.10))
-        ax.set_xlim(-3, 3)
-        ax.set_ylim(-0.5, 5)
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("PlateLocSide")
-        ax.set_ylabel("PlateLocHeight")
-        ax.grid(True, alpha=0.2)
+        fig.update_xaxes(
+            range=[-3, 3], showgrid=True,
+            gridcolor="rgba(0,0,0,0.08)", zeroline=False,
+            title="PlateLocSide",
+        )
+        fig.update_yaxes(
+            range=[0, 5], showgrid=True,
+            gridcolor="rgba(0,0,0,0.08)", zeroline=False,
+            scaleanchor="x", scaleratio=1,
+            title="PlateLocHeight",
+        )
+        fig.update_layout(
+            paper_bgcolor="#f7f7f7", plot_bgcolor="#f7f7f7",
+            margin=dict(l=10, r=10, t=10, b=10),
+            height=340, dragmode="zoom",
+        )
 
-        plt.close(fig)
-        return fig
+        return ui.HTML(fig.to_html(
+            full_html=False, include_plotlyjs=False,
+            config={
+                "displayModeBar": True,
+                "displaylogo": False,
+                "scrollZoom": True,
+                "modeBarButtonsToRemove": [
+                    "toImage", "select2d", "lasso2d",
+                    "hoverClosestCartesian", "hoverCompareCartesian",
+                    "toggleSpikelines",
+                ],
+            },
+        ))
 
 
     @output
@@ -4074,19 +5353,19 @@ def server(input, output, session):
                 if sel else pd.Series(False, index=out.index)
             )
 
-            # Selected row style (bigger + bold)
+            # Selected row style — warm yellow bg + gold left border on first col
+            # !important is required because .usage-table-wrap CSS uses !important
+            # on zebra-stripe background and would otherwise override inline styles.
             selected_style_main = (
-                "font-size:18px;"
-                "font-weight:900;"
-                "color:#000000;"
-                "border-left:5px solid #DDB945;"
+                "font-size:18px !important;font-weight:800 !important;color:#000000 !important;"
+                "background-color:#fff8e1 !important;"
+                "border-left:4px solid #DDB945 !important;"
+                "padding:12px 10px !important;"
             )
-
             selected_style_other = (
-                "font-size:16px;"
-                "font-weight:800;"
-                "color:#111111;"
-                "background-color:#fff8dc;"
+                "font-size:18px !important;font-weight:800 !important;color:#000000 !important;"
+                "background-color:#fff8e1 !important;"
+                "padding:12px 10px !important;"
             )
 
             # Normal row style
@@ -4268,7 +5547,7 @@ def server(input, output, session):
             style="display:flex;gap:14px;",
         )
 
-    # ── pitcher scout insights ─────────────────────────────────────────────
+    # ── pitcher scout insights (outcome + count-based) ───────────────────────
     @output
     @render.ui
     def pitcher_scout_insights():
@@ -4280,7 +5559,32 @@ def server(input, output, session):
         if session_type == "bullpen":
             return ui.div()
 
-        def _badge_item(badge, color, desc):
+        d = data.copy()
+        if PITCH_TYPE_COL not in d.columns or "PitchCall" not in d.columns:
+            return ui.div()
+
+        d = d[is_valid_pitch_type(d[PITCH_TYPE_COL])].copy()
+        if len(d) < 20:
+            return ui.div(
+                ui.tags.span("Insufficient data for scouting insights.",
+                             style="font-size:12px;color:#888;font-style:italic;"),
+                style="padding:12px 16px;",
+            )
+
+        pc = d["PitchCall"].astype(str).str.strip()
+        pr = d["PlayResult"].astype(str).str.strip() if "PlayResult" in d.columns else pd.Series("", index=d.index)
+
+        SW = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        STRIKE_EVENTS = {"StrikeCalled", "StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        OUT_RESULTS = {"Out", "FieldersChoice", "Strikeout", "Sacrifice", "SacrificeFly", "SacrificeBunt", "Error"}
+        PA_RESULTS = {"Single", "Double", "Triple", "HomeRun", "Out", "FieldersChoice",
+                      "Strikeout", "Walk", "HitByPitch", "SacrificeFly", "SacrificeBunt",
+                      "Sacrifice", "Error", "CatcherInterference"}
+        HIT_RESULTS = {"Single", "Double", "Triple", "HomeRun"}
+
+        is_terminal = pr.isin(PA_RESULTS) | pc.eq("HitByPitch")
+
+        def _badge(badge, color, desc):
             return ui.tags.div(
                 ui.tags.span(badge, style=(
                     f"display:inline-block;background:{color};color:#fff;"
@@ -4302,123 +5606,158 @@ def server(input, output, session):
                     "border-bottom:1px solid #eee;"
                 )),
                 *items,
-                style="margin-bottom:12px;",
+                style="margin-bottom:24px;padding-bottom:12px;border-bottom:2px solid #e8e8e8;",
             )
 
         sections = []
-        sel = selected_pitch.get()
-        d = data.copy()
-        if sel and PITCH_TYPE_COL in d.columns:
-            d = d[d[PITCH_TYPE_COL].astype(str).str.strip() == sel]
 
-        pc = d["PitchCall"].astype(str).str.strip() if "PitchCall" in d.columns else pd.Series("", index=d.index)
-        SW = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-        CT = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        # ── 1. Count-Based Recommendations ──
+        count_items = []
+        if "Balls" in d.columns and "Strikes" in d.columns:
+            balls = pd.to_numeric(d["Balls"], errors="coerce")
+            strikes = pd.to_numeric(d["Strikes"], errors="coerce")
 
-        # ── 1. Pitch Arsenal insights (max 2) ──
-        arsenal_items = []
-        if PITCH_TYPE_COL in d.columns and not sel:
-            pt_counts = d[is_valid_pitch_type(d[PITCH_TYPE_COL])][PITCH_TYPE_COL].value_counts()
-            total = len(d)
-            if total > 0 and len(pt_counts) >= 2:
-                primary = pt_counts.index[0]
-                primary_pct = pt_counts.iloc[0] / total
-                arsenal_items.append(_badge_item("PRIMARY PITCH", "#1a1a1a",
-                    f"Start with {primary}, having the highest percentage ({primary_pct:.0%})."))
+            COUNT_GROUPS = [
+                ("First Pitch (0-0)", [(0, 0)], "strike_rate"),
+                ("Ahead (0-2, 1-2)", [(0, 2), (1, 2)], "whiff_rate"),
+                ("Behind (2-0, 3-0, 3-1)", [(2, 0), (3, 0), (3, 1)], "strike_rate"),
+                ("Even (1-1, 2-2)", [(1, 1), (2, 2)], "out_rate"),
+            ]
 
-                # Find best whiff pitch
-                best_whiff_pt = None
-                best_whiff_rate = 0
-                for pt in pt_counts.index:
-                    ptd = d[d[PITCH_TYPE_COL].astype(str).str.strip() == pt]
-                    ptpc = ptd["PitchCall"].astype(str).str.strip()
-                    n_sw = ptpc.isin(SW).sum()
-                    n_whiff = (ptpc == "StrikeSwinging").sum()
-                    if n_sw >= 5:
-                        wr = n_whiff / n_sw
-                        if wr > best_whiff_rate:
-                            best_whiff_rate = wr
-                            best_whiff_pt = pt
-                if best_whiff_pt and best_whiff_rate >= 0.15:
-                    arsenal_items.append(_badge_item("PUT-AWAY PITCH", "#7B2FBE",
-                        f"The {best_whiff_pt} is the out pitch ({best_whiff_rate:.0%} whiff rate). "
-                        f"Get ahead, then finish with this.")
-                    )
+            for label, counts, metric in COUNT_GROUPS:
+                count_mask = pd.Series(False, index=d.index)
+                for b, s in counts:
+                    count_mask = count_mask | (balls.eq(b) & strikes.eq(s))
 
-        sec = _section("Pitch Arsenal", arsenal_items[:2])
+                count_d = d[count_mask]
+                if len(count_d) < 10:
+                    continue
+
+                count_pc = count_d["PitchCall"].astype(str).str.strip()
+                count_pr = count_d["PlayResult"].astype(str).str.strip() if "PlayResult" in count_d.columns else pd.Series("", index=count_d.index)
+                count_terminal = count_pr.isin(PA_RESULTS) | count_pc.eq("HitByPitch")
+
+                best_pt = None
+                best_val = -1
+                best_n = 0
+
+                for pt, g in count_d.groupby(PITCH_TYPE_COL):
+                    if len(g) < 3:
+                        continue
+                    g_pc = g["PitchCall"].astype(str).str.strip()
+                    g_pr = g["PlayResult"].astype(str).str.strip() if "PlayResult" in g.columns else pd.Series("", index=g.index)
+                    g_terminal = g_pr.isin(PA_RESULTS) | g_pc.eq("HitByPitch")
+
+                    if metric == "strike_rate":
+                        val = g_pc.isin(STRIKE_EVENTS).mean()
+                        val_label = "strike rate"
+                    elif metric == "whiff_rate":
+                        n_sw = g_pc.isin(SW).sum()
+                        val = (g_pc.eq("StrikeSwinging").sum() / n_sw) if n_sw > 0 else 0
+                        val_label = "whiff rate"
+                    else:  # out_rate
+                        n_pa = int(g_terminal.sum())
+                        n_outs = int((g_terminal & g_pr.isin(OUT_RESULTS)).sum())
+                        val = n_outs / n_pa if n_pa > 0 else 0
+                        val_label = "out rate"
+
+                    if val > best_val:
+                        best_val = val
+                        best_pt = pt
+                        best_n = len(g)
+
+                if best_pt and best_val > 0:
+                    count_items.append(_badge(label.split("(")[0].strip().upper(), "#185FA5",
+                        f"{best_pt} — {best_val:.0%} {val_label} ({best_n} pitches). "
+                        f"Best option in {label.split('(')[1].rstrip(')').strip()} counts."))
+
+        sec = _section("By Count", count_items[:4])
         if sec:
             sections.append(sec)
 
-        # ── 2. Command insights (max 2) ──
-        cmd_items = []
+        # ── 3. Tendencies (not visible in Summary Table) ──
+        tend_items = []
+
+        # First-pitch tendency
+        if "Balls" in d.columns and "Strikes" in d.columns:
+            b_col = pd.to_numeric(d["Balls"], errors="coerce")
+            s_col = pd.to_numeric(d["Strikes"], errors="coerce")
+            fp = d[b_col.eq(0) & s_col.eq(0)]
+            if len(fp) >= 10:
+                fp_pc = fp["PitchCall"].astype(str).str.strip()
+                fp_strike_pct = fp_pc.isin(STRIKE_EVENTS).mean()
+                # Most common first pitch type
+                fp_valid = fp[is_valid_pitch_type(fp[PITCH_TYPE_COL])]
+                if not fp_valid.empty:
+                    fp_top = fp_valid[PITCH_TYPE_COL].value_counts()
+                    fp_primary = fp_top.index[0]
+                    fp_primary_pct = fp_top.iloc[0] / len(fp_valid)
+                    if fp_strike_pct >= 0.65:
+                        tend_items.append(_badge("FIRST PITCH", "#1D9E75",
+                            f"Throws {fp_primary} first {fp_primary_pct:.0%} of the time with "
+                            f"{fp_strike_pct:.0%} first-pitch strike rate. Aggressive — attacks early."))
+                    elif fp_strike_pct <= 0.45:
+                        tend_items.append(_badge("FIRST PITCH", "#E67E22",
+                            f"Only {fp_strike_pct:.0%} first-pitch strike rate. "
+                            f"Favors {fp_primary} ({fp_primary_pct:.0%}) — tends to fall behind."))
+                    else:
+                        tend_items.append(_badge("FIRST PITCH", "#185FA5",
+                            f"Leads with {fp_primary} ({fp_primary_pct:.0%}), "
+                            f"{fp_strike_pct:.0%} first-pitch strike rate."))
+
+        # Command pattern (zone rate + arm-side/glove-side)
         if "PlateLocSide" in d.columns and "PlateLocHeight" in d.columns:
-            lh = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
             ls = pd.to_numeric(d["PlateLocSide"], errors="coerce")
-            valid = lh.notna() & ls.notna()
-            dv = d[valid].copy()
-            dv["_lh"] = pd.to_numeric(dv["PlateLocHeight"], errors="coerce")
-            dv["_ls"] = pd.to_numeric(dv["PlateLocSide"], errors="coerce")
+            lh = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+            valid_loc = ls.notna() & lh.notna()
+            dv = d[valid_loc]
 
             if len(dv) >= 20:
                 in_zone = (
-                    dv["_lh"].between(ZONE_BOTTOM, ZONE_TOP) &
-                    dv["_ls"].between(ZONE_LEFT, ZONE_RIGHT)
+                    ls[valid_loc].between(ZONE_LEFT, ZONE_RIGHT) &
+                    lh[valid_loc].between(ZONE_BOTTOM, ZONE_TOP)
                 )
                 zone_pct = in_zone.mean()
 
                 if zone_pct >= 0.55:
-                    cmd_items.append(_badge_item("ZONE CONTROL", "#1D9E75",
-                        f"{zone_pct:.0%} of pitches are in the zone. "
-                        "Attacks hitters and forces them to swing."))
+                    tend_items.append(_badge("ZONE CONTROL", "#1D9E75",
+                        f"{zone_pct:.0%} of pitches land in the zone. "
+                        "Attacks hitters aggressively — forces swings."))
                 elif zone_pct <= 0.35:
-                    cmd_items.append(_badge_item("NIBBLER", "#2980B9",
+                    tend_items.append(_badge("NIBBLER", "#2980B9",
                         f"Only {zone_pct:.0%} in the zone. "
-                        "Pitches around the plate, doesn't give you much to hit."))
+                        "Works the edges — patient hitters can wait her out."))
 
-                # Arm-side vs glove-side tendency
-                arm_side = (dv["_ls"] > 0).mean()
-                glove_side = (dv["_ls"] < 0).mean()
-                if arm_side >= 0.65:
-                    cmd_items.append(_badge_item("ARM-SIDE HEAVY", "#E67E22",
-                        f"Tends to leak arm-side ({arm_side:.0%} of pitches). "
-                        "Sit on the inner half and look to drive it."))
-                elif glove_side >= 0.65:
-                    cmd_items.append(_badge_item("GLOVE-SIDE HEAVY", "#E67E22",
-                        f"Favors the glove side ({glove_side:.0%} of pitches). "
-                        "Cheating away can pay off against this pitcher."))
+                # Arm-side vs glove-side
+                arm_side = (ls[valid_loc] > 0).mean()
+                glove_side = (ls[valid_loc] < 0).mean()
+                if arm_side >= 0.62:
+                    tend_items.append(_badge("ARM-SIDE HEAVY", "#E67E22",
+                        f"{arm_side:.0%} of pitches land arm-side. "
+                        "Predictable location — batters can cheat inside."))
+                elif glove_side >= 0.62:
+                    tend_items.append(_badge("GLOVE-SIDE HEAVY", "#E67E22",
+                        f"{glove_side:.0%} of pitches land glove-side. "
+                        "Favors the away side — look for pitches off the plate."))
 
-        sec = _section("Command", cmd_items[:2])
-        if sec:
-            sections.append(sec)
+        # Pitch sequencing — does she repeat pitches or mix?
+        if PITCH_TYPE_COL in d.columns and len(d) >= 30:
+            pts = d[is_valid_pitch_type(d[PITCH_TYPE_COL])][PITCH_TYPE_COL].astype(str).str.strip()
+            if len(pts) >= 20:
+                repeats = sum(1 for a, b in zip(pts.iloc[:-1], pts.iloc[1:]) if a == b)
+                repeat_rate = repeats / (len(pts) - 1)
+                n_types = pts.nunique()
 
-        # ── 3. Effectiveness insights (max 2) ──
-        eff_items = []
-        n_total = len(d)
-        if n_total >= 20:
-            n_sw = pc.isin(SW).sum()
-            n_whiff = (pc == "StrikeSwinging").sum()
-            n_contact = pc.isin(CT).sum()
+                if repeat_rate >= 0.45:
+                    tend_items.append(_badge("REPEATER", "#854F0B",
+                        f"Throws the same pitch back-to-back {repeat_rate:.0%} of the time. "
+                        "Predictable sequencing — sit on the pitch she just threw."))
+                elif repeat_rate <= 0.20 and n_types >= 4:
+                    tend_items.append(_badge("MIXER", "#1D9E75",
+                        f"Only {repeat_rate:.0%} back-to-back repeats across {n_types} pitch types. "
+                        "Keeps hitters off-balance with varied sequencing."))
 
-            if n_sw > 0:
-                overall_whiff = n_whiff / n_sw
-                if overall_whiff <= 0.08:
-                    eff_items.append(_badge_item("CONTACT PITCHER", "#c0392b",
-                        f"Only {overall_whiff:.0%} whiff rate. "
-                        "Hitters put the bat on the ball. Needs the defense behind her."))
-
-            # Check KorBB
-            if "KorBB" in d.columns:
-                korbb = d["KorBB"].astype(str).str.strip()
-                n_k = (korbb == "Strikeout").sum()
-                n_bb = (korbb == "Walk").sum()
-                if n_bb > 0:
-                    k_bb = n_k / n_bb
-                    if k_bb <= 1.0:
-                        eff_items.append(_badge_item("FREE PASSES", "#c0392b",
-                            f"{k_bb:.1f} K/BB — walking more than she's striking out. "
-                            "Falling behind in counts."))
-
-        sec = _section("Effectiveness", eff_items[:2])
+        sec = _section("Tendencies", tend_items[:4])
         if sec:
             sections.append(sec)
 
@@ -4435,6 +5774,11 @@ def server(input, output, session):
     @output
     @render.ui
     def home_profile_header():
+        if input.data_source() == "hittrax":
+            return ui.div(
+                ui.div("Batter Profile", class_="profile-title"),
+                ui.div(hittrax_summary_text() or "Select a batter to view profile", class_="player-summary"),
+            )
         if input.player_type() == "pitcher":
             return ui.div(
                 ui.div("Pitcher Profile", class_="profile-title"),
@@ -4460,7 +5804,11 @@ def server(input, output, session):
         is_bp   = (session == "batting_practice")
 
         def fmt(v):
-            return "—" if v is None else f".{int(round(v * 1000)):03d}"
+            if v is None:
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v * 1000)):03d}"
 
         if is_bp:
             row = {"": "Total", "AB": s["AB"], "H": s["H"],
@@ -4526,7 +5874,11 @@ def server(input, output, session):
         CONTACT_EVENTS = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
 
         def fmt_ba(v):
-            return "—" if v is None else f".{int(round(v * 1000)):03d}"
+            if v is None:
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v * 1000)):03d}"
         def pct_str(n, d):
             return f"{n / d * 100:.1f}%" if d > 0 else "—"
 
@@ -4582,13 +5934,19 @@ def server(input, output, session):
                 out["Pitch type"].astype(str).str.strip() == str(sel).strip()
                 if sel else pd.Series(False, index=out.index)
             )
+            # Selected row style — warm yellow bg + gold left border on first col
+            # !important is required because .usage-table-wrap CSS uses !important
+            # on zebra-stripe background and would otherwise override inline styles.
             selected_style_main = (
-                "font-size:18px;font-weight:900;color:#000000;"
-                "border-left:5px solid #DDB945;"
+                "font-size:18px !important;font-weight:800 !important;color:#000000 !important;"
+                "background-color:#fff8e1 !important;"
+                "border-left:4px solid #DDB945 !important;"
+                "padding:12px 10px !important;"
             )
             selected_style_other = (
-                "font-size:16px;font-weight:800;color:#111111;"
-                "background-color:#fff8dc;"
+                "font-size:18px !important;font-weight:800 !important;color:#000000 !important;"
+                "background-color:#fff8e1 !important;"
+                "padding:12px 10px !important;"
             )
             normal_style_main = "font-size:12.5px;color:#444444;"
             normal_style_other = "font-size:12px;color:#555555;"
@@ -4603,240 +5961,297 @@ def server(input, output, session):
             .apply(highlight_col, axis=0)
         )
 
-    # ── pitch location heatmap ───────────────────────────────────────────────
-    @output
-    @render.plot
-    def batter_location_plot():
+    # ── helpers shared by both zone charts ─────────────────────────────────
+    def _batter_zone_data():
+        """Filter batter data for the selected player + pitch type, with location.
+
+        Flips PlateLocSide so the chart displays in catcher's view (looking
+        out toward the pitcher), matching the standard scouting convention.
+        """
         data = batter_data()
         bid = input.player() if input.player_type() == "batter" else None
+        if data is None or data.empty or not bid:
+            return None, ""
+        d = data[data["BatterId"].astype(str) == str(bid)].copy()
+        sel = batter_selected_pitch()
+        if sel and PITCH_TYPE_COL in d.columns:
+            d = d[d[PITCH_TYPE_COL].astype(str).str.strip() == sel]
+        for c in ["PlateLocSide", "PlateLocHeight"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
+        # Flip to catcher's view (industry standard for scouting)
+        d["PlateLocSide"] = -d["PlateLocSide"]
+        # Derive the vs-hand label from the filter selection so it always
+        # matches the sidebar (not from iloc[0] of PitcherThrows).
+        side_sel = str(input.batter_side()).lower()
+        pitcher_hand = {"right": "RHP", "left": "LHP"}.get(side_sel, "All")
+        if "PitchCall" not in d.columns:
+            d["PitchCall"] = ""
+        if "PlayResult" not in d.columns:
+            d["PlayResult"] = ""
+        return d, pitcher_hand
+
+    def _draw_empty_zone(ax):
+        zw = (ZONE_RIGHT - ZONE_LEFT) / 3
+        zh = (ZONE_TOP - ZONE_BOTTOM) / 3
+        for r in range(3):
+            for c in range(3):
+                ax.add_patch(Rectangle(
+                    (ZONE_LEFT + c * zw, ZONE_BOTTOM + r * zh), zw, zh,
+                    facecolor="white", edgecolor="#aaa", linewidth=1.2, zorder=2,
+                ))
+        ax.add_patch(Rectangle(
+            (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM,
+            fill=False, linewidth=2.5, edgecolor="#222", zorder=5,
+        ))
+
+    def _style_zone_ax(ax):
+        ax.set_xlim(ZONE_LEFT - 1.0, ZONE_RIGHT + 1.0)
+        ax.set_ylim(ZONE_BOTTOM - 0.6, ZONE_TOP + 0.8)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    # ── out rate by zone heatmap ─────────────────────────────────────────────
+    @output
+    @render.plot
+    def batter_out_rate_plot():
+        d, pitcher_hand = _batter_zone_data()
 
         fig, ax = plt.subplots(figsize=(6, 6))
         fig.patch.set_facecolor("#f7f7f7")
         ax.set_facecolor("#f7f7f7")
         ax.set_box_aspect(1)
 
-        SWING_EVENTS = {
-            "StrikeSwinging",
-            "FoulBallFieldable",
-            "FoulBallNotFieldable",
-            "InPlay",
-        }
-        CONTACT_EVENTS = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-        # Shape + color for outside-zone dots (distinct from pitch type colors)
-        DOT_STYLE = {
-            "StrikeCalled":        {"marker": "o", "color": "#999999"},  # circle = take
-            "Ball":                {"marker": "o", "color": "#999999"},
-            "BallCalled":          {"marker": "o", "color": "#999999"},
-            "StrikeSwinging":      {"marker": "X", "color": "#E24B4A"},  # X = swing & miss
-            "FoulBallFieldable":   {"marker": "^", "color": "#7B68AE"},  # triangle = foul
-            "FoulBallNotFieldable":{"marker": "^", "color": "#7B68AE"},
-            "InPlay":              {"marker": "D", "color": "#2E8B57"},  # diamond = in play
-        }
-
         zw = (ZONE_RIGHT - ZONE_LEFT) / 3
         zh = (ZONE_TOP - ZONE_BOTTOM) / 3
         col_edges = [ZONE_LEFT + i * zw for i in range(4)]
         row_edges = [ZONE_BOTTOM + i * zh for i in range(4)]
 
-        pitcher_hand = ""
-        total_pitches = 0
-        total_swings = 0
-        total_contact = 0
+        OUT_RESULTS = {"Out", "FieldersChoice", "Strikeout", "Sacrifice",
+                       "SacrificeFly", "SacrificeBunt", "Error"}
+        PA_RESULTS = {"Single", "Double", "Triple", "HomeRun", "Out",
+                      "FieldersChoice", "Strikeout", "Walk", "HitByPitch",
+                      "SacrificeFly", "SacrificeBunt", "Sacrifice",
+                      "Error", "CatcherInterference"}
 
-        if data is not None and not data.empty and bid:
-            d = data[data["BatterId"].astype(str) == str(bid)].copy()
+        total_pa = 0
+        total_outs = 0
 
-            # pitch type filter
-            sel = batter_selected_pitch()
-            if sel and PITCH_TYPE_COL in d.columns:
-                d = d[d[PITCH_TYPE_COL].astype(str).str.strip() == sel]
-
-            for c in ["PlateLocSide", "PlateLocHeight"]:
-                d[c] = pd.to_numeric(d[c], errors="coerce")
-            d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
-
-            if "PitcherThrows" in d.columns:
-                pt = d["PitcherThrows"].dropna().astype(str).str.strip()
-                if not pt.empty:
-                    val = pt.iloc[0].lower()
-                    pitcher_hand = "RHP" if "right" in val else "LHP" if "left" in val else ""
-
-            if "PitchCall" not in d.columns:
-                d["PitchCall"] = ""
+        if d is not None and not d.empty:
             pc = d["PitchCall"].astype(str).str.strip()
+            pr = d["PlayResult"].astype(str).str.strip()
 
-            total_pitches = len(d)
-            total_swings = int(pc.isin(SWING_EVENTS).sum())
-            total_contact = int(pc.isin(CONTACT_EVENTS).sum())
+            # Only count terminal pitches (PA-ending) for out rate
+            is_terminal = pr.isin(PA_RESULTS) | pc.eq("HitByPitch")
 
-            d["is_in_zone"] = (
-                d["PlateLocSide"].between(ZONE_LEFT, ZONE_RIGHT)
-                & d["PlateLocHeight"].between(ZONE_BOTTOM, ZONE_TOP)
-            )
-
-            shadow_pad_x = 0.35
-            shadow_pad_y = 0.30
+            # Shadow zone background (green, matching old deployed style)
             ax.add_patch(Rectangle(
-                (ZONE_LEFT - shadow_pad_x, ZONE_BOTTOM - shadow_pad_y),
-                (ZONE_RIGHT - ZONE_LEFT) + 2 * shadow_pad_x,
-                (ZONE_TOP - ZONE_BOTTOM) + 2 * shadow_pad_y,
-                facecolor="#edf4ee",
-                edgecolor="none",
-                zorder=0,
+                (ZONE_LEFT - 0.35, ZONE_BOTTOM - 0.30),
+                (ZONE_RIGHT - ZONE_LEFT) + 0.70, (ZONE_TOP - ZONE_BOTTOM) + 0.60,
+                facecolor="#edf4ee", edgecolor="none", zorder=0,
             ))
 
             for row_i in range(3):
                 for col_i in range(3):
-                    x0 = col_edges[col_i]
-                    x1 = col_edges[col_i + 1]
-                    y0 = row_edges[row_i]
-                    y1 = row_edges[row_i + 1]
-                    cx = (x0 + x1) / 2
-                    cy = (y0 + y1) / 2
+                    x0, x1 = col_edges[col_i], col_edges[col_i + 1]
+                    y0, y1 = row_edges[row_i], row_edges[row_i + 1]
+                    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
 
-                    mask = (
-                        d["PlateLocSide"].between(x0, x1)
-                        & d["PlateLocHeight"].between(y0, y1)
-                    )
-                    cell_d = d[mask]
-                    n_cell = len(cell_d)
-                    n_swing = int(pc[mask].isin(SWING_EVENTS).sum())
+                    in_cell = d["PlateLocSide"].between(x0, x1) & d["PlateLocHeight"].between(y0, y1)
+                    terminal_in_cell = in_cell & is_terminal
+                    n_pa = int(terminal_in_cell.sum())
+                    n_outs = int((terminal_in_cell & pr.isin(OUT_RESULTS)).sum())
+                    total_pa += n_pa
+                    total_outs += n_outs
 
-                    if n_cell == 0:
+                    if n_pa == 0:
                         cell_bg = "#f5f5f5"
                     else:
-                        swing_pct = n_swing / n_cell
-                        if swing_pct >= 0.75:
+                        out_pct = n_outs / n_pa
+                        if out_pct >= 0.75:
                             cell_bg = "#c0392b"
-                        elif swing_pct >= 0.50:
+                        elif out_pct >= 0.50:
                             cell_bg = "#f0b000"
-                        elif swing_pct >= 0.25:
+                        elif out_pct >= 0.25:
                             cell_bg = "#f5dfb3"
                         else:
                             cell_bg = "#ffffff"
 
                     ax.add_patch(Rectangle(
                         (x0, y0), zw, zh,
-                        facecolor=cell_bg,
-                        edgecolor="#999999",
-                        linewidth=1.2,
-                        zorder=2,
+                        facecolor=cell_bg, edgecolor="#999", linewidth=1.2, zorder=2,
                     ))
 
-                    if n_cell == 0:
-                        ax.text(
-                            cx, cy, "—",
-                            ha="center", va="center",
-                            fontsize=13, color="#aaaaaa", zorder=3
-                        )
+                    if n_pa == 0:
+                        ax.text(cx, cy, "—", ha="center", va="center",
+                                fontsize=13, color="#aaa", zorder=3)
                         continue
 
-                    swing_pct = n_swing / n_cell
-                    pct_txt = f"{int(round(swing_pct * 100))}%"
-                    frac_txt = f"{n_swing}/{n_cell}"
+                    out_pct = n_outs / n_pa
+                    pct_txt = f"{int(round(out_pct * 100))}%"
+                    frac_txt = f"{n_outs}/{n_pa}"
+                    txt_color = "#ffffff" if out_pct >= 0.40 else "#222222"
 
-                    txt_color = "#ffffff" if swing_pct >= 0.50 else "#222222"
-                    sub_color = "#ffe0db" if swing_pct >= 0.75 else "#666666"
-
-                    ax.text(
-                        cx, cy + zh * 0.16, pct_txt,
-                        ha="center", va="center",
-                        fontsize=16, fontweight="bold",
-                        color=txt_color, zorder=3,
-                    )
-                    ax.text(
-                        cx, cy - zh * 0.10, frac_txt,
-                        ha="center", va="center",
-                        fontsize=10,
-                        color=sub_color if swing_pct >= 0.50 else "#666666",
-                        zorder=3,
-                    )
-
-            outside = d[~d["is_in_zone"]].copy()
-            if not outside.empty:
-                outside["_call"] = outside["PitchCall"].astype(str).str.strip()
-                for call_val, grp in outside.groupby("_call", sort=False):
-                    sty = DOT_STYLE.get(call_val, {"marker": "o", "color": "#cccccc"})
-                    ax.scatter(
-                        grp["PlateLocSide"], grp["PlateLocHeight"],
-                        s=70, marker=sty["marker"], color=sty["color"], alpha=0.85,
-                        edgecolors="white", linewidth=0.5, zorder=4,
-                    )
+                    ax.text(cx, cy + zh * 0.16, pct_txt,
+                            ha="center", va="center", fontsize=16,
+                            fontweight="bold", color=txt_color, zorder=3)
+                    ax.text(cx, cy - zh * 0.10, frac_txt,
+                            ha="center", va="center", fontsize=10,
+                            color="#ffe0db" if out_pct >= 0.60 else "#666", zorder=3)
 
             ax.add_patch(Rectangle(
-                (ZONE_LEFT, ZONE_BOTTOM),
-                ZONE_RIGHT - ZONE_LEFT,
-                ZONE_TOP - ZONE_BOTTOM,
-                fill=False,
-                linewidth=2.5,
-                edgecolor="#222222",
-                zorder=5,
+                (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT, ZONE_TOP - ZONE_BOTTOM,
+                fill=False, linewidth=2.5, edgecolor="#222", zorder=5,
             ))
-
         else:
-            for row_i in range(3):
-                for col_i in range(3):
-                    x0 = col_edges[col_i]
-                    y0 = row_edges[row_i]
-                    ax.add_patch(Rectangle(
-                        (x0, y0), zw, zh,
-                        facecolor="white",
-                        edgecolor="#aaaaaa",
-                        linewidth=1.2,
-                        zorder=2,
-                    ))
-            ax.add_patch(Rectangle(
-                (ZONE_LEFT, ZONE_BOTTOM),
-                ZONE_RIGHT - ZONE_LEFT,
-                ZONE_TOP - ZONE_BOTTOM,
-                fill=False,
-                linewidth=2.5,
-                edgecolor="#222222",
-                zorder=5,
-            ))
+            _draw_empty_zone(ax)
 
-        s_pct = f"{int(round(total_swings / total_pitches * 100))}%" if total_pitches > 0 else "—"
-        c_pct = f"{int(round(total_contact / total_swings * 100))}%" if total_swings > 0 else "—"
-
+        # Subtitle
+        out_pct_total = f"{int(round(total_outs / total_pa * 100))}%" if total_pa > 0 else "—"
         vs_str = f" | vs {pitcher_hand}" if pitcher_hand else ""
-        subtitle = f"Swing%: {s_pct}   |   Contact%: {c_pct}   |   n = {total_pitches}{vs_str}"
+        ax.text(0.5, 1.03,
+                f"Out Rate: {out_pct_total} | In-Zone PA: {total_pa}",
+                transform=ax.transAxes, ha="center", va="bottom",
+                fontsize=10, color="#555")
 
-        ax.text(
-            0.5, 1.03, subtitle,
-            transform=ax.transAxes,
-            ha="center", va="bottom",
-            fontsize=10, color="#555555",
-        )
-
-        legend_handles = [
-            plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#999999", markersize=9, label="Take"),
-            plt.Line2D([0], [0], marker="X", color="w", markerfacecolor="#E24B4A", markeredgecolor="#E24B4A", markersize=9, label="Swing & Miss"),
-            plt.Line2D([0], [0], marker="^", color="w", markerfacecolor="#7B68AE", markersize=9, label="Foul"),
-            plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="#2E8B57", markersize=9, label="In Play"),
-        ]
-        ax.legend(
-            handles=legend_handles,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.18),
-            ncol=4,
-            frameon=True,
-            fontsize=9,
-            handletextpad=0.4,
-            columnspacing=1.2,
-        )
-
-        ax.set_xlim(ZONE_LEFT - 1.0, ZONE_RIGHT + 1.0)
-        ax.set_ylim(ZONE_BOTTOM - 0.6, ZONE_TOP + 0.8)
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-        fig.subplots_adjust(top=0.88, bottom=0.20, left=0.08, right=0.92)
-        
+        _style_zone_ax(ax)
+        fig.subplots_adjust(top=0.88, bottom=0.08, left=0.08, right=0.92)
         plt.close(fig)
         return fig
+
+    # ── individual pitch results scatter (plotly for zoom) ──────────────────
+    @output
+    @render.ui
+    def batter_pitch_results_plot():
+        d, pitcher_hand = _batter_zone_data()
+
+        fig = go.Figure()
+
+        RESULT_TRACES = [
+            ("Swing & Miss",  {"calls": {"StrikeSwinging"},
+                               "symbol": "x", "color": "#E24B4A", "size": 10}),
+            ("Foul",          {"calls": {"FoulBallFieldable", "FoulBallNotFieldable"},
+                               "symbol": "triangle-up", "color": "#7B68AE", "size": 9}),
+            ("Called Strike", {"calls": {"StrikeCalled"},
+                               "symbol": "square", "color": "#E67E22", "size": 8}),
+            ("Ball",          {"calls": {"BallCalled", "Ball"},
+                               "symbol": "circle", "color": "#aaaaaa", "size": 7}),
+        ]
+        HIT_RESULTS = {"Single", "Double", "Triple", "HomeRun"}
+        OUT_RESULTS = {"Out", "FieldersChoice", "Error", "Sacrifice",
+                       "SacrificeFly", "SacrificeBunt"}
+
+        total_pitches = 0
+
+        if d is not None and not d.empty:
+            pc = d["PitchCall"].astype(str).str.strip()
+            pr = d["PlayResult"].astype(str).str.strip()
+            total_pitches = len(d)
+
+            # Strike zone
+            fig.add_shape(type="rect",
+                x0=ZONE_LEFT, y0=ZONE_BOTTOM, x1=ZONE_RIGHT, y1=ZONE_TOP,
+                line=dict(color="black", width=2), fillcolor="rgba(0,0,0,0)",
+            )
+            # Home plate — point faces UP toward the strike zone (17" wide)
+            hp_x = [-0.71, 0.71, 0.71, 0, -0.71]
+            hp_y = [0.95, 0.95, 1.15, 1.35, 1.15]
+            fig.add_trace(go.Scatter(
+                x=hp_x + [hp_x[0]], y=hp_y + [hp_y[0]],
+                mode="lines", fill="toself",
+                fillcolor="rgba(255,255,255,0.9)",
+                line=dict(color="#222", width=1.5),
+                showlegend=False, hoverinfo="skip",
+            ))
+
+            # Non-InPlay traces
+            for label, sty in RESULT_TRACES:
+                mask = pc.isin(sty["calls"])
+                if not mask.any():
+                    continue
+                g = d[mask]
+                fig.add_trace(go.Scatter(
+                    x=g["PlateLocSide"], y=g["PlateLocHeight"],
+                    mode="markers", name=label,
+                    hovertemplate=f"{label}<br>Side: %{{x:.2f}}<br>Height: %{{y:.2f}}<extra></extra>",
+                    marker=dict(
+                        size=sty["size"], color=sty["color"],
+                        symbol=sty["symbol"], opacity=0.82,
+                        line=dict(color="white", width=0.5),
+                    ),
+                ))
+
+            # InPlay — split hits vs outs
+            in_play = d[pc.eq("InPlay")]
+            if not in_play.empty:
+                ip_pr = in_play["PlayResult"].astype(str).str.strip()
+                hits = in_play[ip_pr.isin(HIT_RESULTS)]
+                outs = in_play[ip_pr.isin(OUT_RESULTS)]
+
+                if not hits.empty:
+                    fig.add_trace(go.Scatter(
+                        x=hits["PlateLocSide"], y=hits["PlateLocHeight"],
+                        mode="markers", name="In-Play Hit",
+                        hovertemplate="Hit (%{text})<br>Side: %{x:.2f}<br>Height: %{y:.2f}<extra></extra>",
+                        text=hits["PlayResult"].astype(str).str.strip(),
+                        marker=dict(size=10, color="#2E8B57", symbol="diamond",
+                                    opacity=0.85, line=dict(color="white", width=0.5)),
+                    ))
+                if not outs.empty:
+                    fig.add_trace(go.Scatter(
+                        x=outs["PlateLocSide"], y=outs["PlateLocHeight"],
+                        mode="markers", name="In-Play Out",
+                        hovertemplate="Out<br>Side: %{x:.2f}<br>Height: %{y:.2f}<extra></extra>",
+                        marker=dict(size=10, color="#8B0000", symbol="diamond",
+                                    opacity=0.85, line=dict(color="white", width=0.5)),
+                    ))
+        else:
+            fig.add_shape(type="rect",
+                x0=ZONE_LEFT, y0=ZONE_BOTTOM, x1=ZONE_RIGHT, y1=ZONE_TOP,
+                line=dict(color="#222", width=2), fillcolor="rgba(0,0,0,0)",
+            )
+            fig.add_annotation(text="No data", x=0, y=2.5,
+                               showarrow=False, font=dict(size=14, color="#888"))
+
+        vs_str = f" | vs {pitcher_hand}" if pitcher_hand else ""
+        fig.update_layout(
+            title=dict(text=f"n = {total_pitches}{vs_str}", font=dict(size=12, color="#555"),
+                       x=0.5, xanchor="center"),
+            paper_bgcolor="#f7f7f7", plot_bgcolor="#f7f7f7",
+            height=520, dragmode="zoom",
+            legend=dict(
+                orientation="h", yanchor="top", y=-0.02, xanchor="center", x=0.5,
+                font=dict(size=10), bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#ccc", borderwidth=1,
+                itemclick="toggleothers",
+                itemdoubleclick="toggle",
+            ),
+            margin=dict(l=10, r=10, t=35, b=50),
+        )
+        fig.update_xaxes(
+            range=[ZONE_LEFT - 1.0, ZONE_RIGHT + 1.0],
+            showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=False,
+            showticklabels=False,
+        )
+        fig.update_yaxes(
+            range=[ZONE_BOTTOM - 0.6, ZONE_TOP + 0.8],
+            showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=False,
+            scaleanchor="x", scaleratio=1,
+            showticklabels=False,
+        )
+
+        return ui.HTML(fig.to_html(
+            full_html=False, include_plotlyjs=False,
+            config={
+                "displayModeBar": True, "displaylogo": False, "scrollZoom": True,
+                "modeBarButtonsToRemove": [
+                    "toImage", "select2d", "lasso2d",
+                    "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
+                ],
+            },
+        ))
 
     # ── scout insights ──────────────────────────────────────────────────────
     @output
@@ -4882,12 +6297,16 @@ def server(input, output, session):
                     "border-bottom:1px solid #eee;"
                 )),
                 *items,
-                style="margin-bottom:12px;",
+                style="margin-bottom:24px;padding-bottom:12px;border-bottom:2px solid #e8e8e8;",
             )
 
-        sections = []
+        sec_location = None
+        sec_spray = None
+        sec_discipline = None
+        sec_matchups = None
+        sec_count = None
 
-        # ── 1. Pitch Location insights (max 2) ──
+        # ── Pitch Location insights (max 2) ──
         d = d_all.copy()
         for c in ["PlateLocSide", "PlateLocHeight"]:
             if c in d.columns:
@@ -4962,9 +6381,7 @@ def server(input, output, session):
 
         loc_candidates.sort(key=lambda x: x[0], reverse=True)
         loc_items = [_badge_item(b, c, l, d) for _, b, c, l, d in loc_candidates[:2]]
-        sec = _section("Pitch Location", loc_items)
-        if sec:
-            sections.append(sec)
+        sec_location = _section("Pitch Location", loc_items)
 
         # ── 2. Spray Chart insights (max 2) ──
         spray_items = []
@@ -5006,9 +6423,7 @@ def server(input, output, session):
                                     f"{xbh_oppo:.0%} of extra-base hits go opposite field. "
                                     "Generates power the other way. Tough to game plan against."))
 
-        sec = _section("Spray Chart", spray_items[:2])
-        if sec:
-            sections.append(sec)
+        sec_spray = _section("Spray Chart", spray_items[:2])
 
         # ── 3. Plate Discipline insights (max 2) ──
         disc_items = []
@@ -5049,9 +6464,178 @@ def server(input, output, session):
                             f"Only {overall_chase:.0%} chase rate on {n_oz} pitches outside the zone. "
                             "Very disciplined eye. Must throw strikes to get ahead."))
 
-        sec = _section("Plate Discipline", disc_items[:2])
-        if sec:
-            sections.append(sec)
+        sec_discipline = _section("Plate Discipline", disc_items[:2])
+
+        # ── 4. Pitch Outcomes (which pitches this batter struggles/thrives against) ──
+        outcome_items = []
+        if PITCH_TYPE_COL in d_all.columns and "PlayResult" in d_all.columns:
+            pr_all = d_all["PlayResult"].astype(str).str.strip()
+            pc_all2 = d_all["PitchCall"].astype(str).str.strip() if "PitchCall" in d_all.columns else pd.Series("", index=d_all.index)
+            OUT_RESULTS = {"Out", "FieldersChoice", "Strikeout", "Sacrifice",
+                           "SacrificeFly", "SacrificeBunt", "Error"}
+            PA_RESULTS_B = {"Single", "Double", "Triple", "HomeRun", "Out", "FieldersChoice",
+                          "Strikeout", "Walk", "HitByPitch", "SacrificeFly", "SacrificeBunt",
+                          "Sacrifice", "Error", "CatcherInterference"}
+            HIT_RESULTS_B = {"Single", "Double", "Triple", "HomeRun"}
+            SW_B = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+            is_terminal_b = pr_all.isin(PA_RESULTS_B) | pc_all2.eq("HitByPitch")
+            valid_pt = d_all[is_valid_pitch_type(d_all[PITCH_TYPE_COL])].copy()
+
+            pt_stats = []
+            for pt, g in valid_pt.groupby(PITCH_TYPE_COL):
+                g_pc = g["PitchCall"].astype(str).str.strip()
+                g_pr = g["PlayResult"].astype(str).str.strip()
+                g_term = g_pr.isin(PA_RESULTS_B) | g_pc.eq("HitByPitch")
+                n_pa = int(g_term.sum())
+                n_outs = int((g_term & g_pr.isin(OUT_RESULTS)).sum())
+                n_hits = int((g_term & g_pr.isin(HIT_RESULTS_B)).sum())
+                n_ab = n_pa - int((g_term & (g_pr.eq("Walk") | g_pc.eq("HitByPitch"))).sum())
+                ba = n_hits / n_ab if n_ab > 0 else None
+                out_rate = n_outs / n_pa if n_pa > 0 else None
+                n_sw = int(g_pc.isin(SW_B).sum())
+                n_whiff = int(g_pc.eq("StrikeSwinging").sum())
+                whiff_rate = n_whiff / n_sw if n_sw > 0 else None
+                pt_stats.append({"pt": pt, "n_pa": n_pa, "n_pitches": len(g),
+                                 "out_rate": out_rate, "ba": ba, "whiff_rate": whiff_rate})
+
+            qualified_b = [s for s in pt_stats if s["n_pa"] >= 5]
+
+            if qualified_b:
+                # Pitch this batter struggles against (highest out rate)
+                best_out = max(qualified_b, key=lambda s: s["out_rate"] or 0)
+                if best_out["out_rate"] is not None and best_out["out_rate"] >= 0.50:
+                    outcome_items.append(_badge_item("STRUGGLES AGAINST", "#c0392b", best_out["pt"],
+                        f"{best_out['out_rate']:.0%} out rate ({best_out['n_pa']} PA). "
+                        "Attack with this pitch to get outs."))
+
+                # Pitch this batter thrives against (highest BA)
+                ba_qualified = [s for s in qualified_b if s["ba"] is not None and s["ba"] > 0]
+                if ba_qualified:
+                    best_ba = max(ba_qualified, key=lambda s: s["ba"])
+                    if best_ba["ba"] >= 0.300:
+                        ba_fmt = f"{best_ba['ba']:.3f}" if best_ba["ba"] >= 1.0 else f".{int(round(best_ba['ba']*1000)):03d}"
+                        outcome_items.append(_badge_item("THRIVES AGAINST", "#1D9E75", best_ba["pt"],
+                            f"{ba_fmt} BA ({best_ba['n_pa']} PA). "
+                            "Avoid this pitch or relocate carefully."))
+
+                # Most vulnerable to whiffs
+                whiff_q = [s for s in pt_stats if s["whiff_rate"] is not None and s["n_pitches"] >= 10]
+                if whiff_q:
+                    best_whiff = max(whiff_q, key=lambda s: s["whiff_rate"])
+                    if best_whiff["whiff_rate"] >= 0.20:
+                        outcome_items.append(_badge_item("CAN'T CATCH UP TO", "#7B2FBE", best_whiff["pt"],
+                            f"{best_whiff['whiff_rate']:.0%} whiff rate. "
+                            "Use as put-away pitch in 2-strike counts."))
+
+        sec_matchups = _section("Pitch Matchups", outcome_items[:3])
+
+        # ── 5. Count Approach (how this batter performs in different counts) ──
+        count_approach_items = []
+        if "Balls" in d_all.columns and "Strikes" in d_all.columns and "PitchCall" in d_all.columns:
+            b_col = pd.to_numeric(d_all["Balls"], errors="coerce")
+            s_col = pd.to_numeric(d_all["Strikes"], errors="coerce")
+            pc_ca = d_all["PitchCall"].astype(str).str.strip()
+            pr_ca = d_all["PlayResult"].astype(str).str.strip() if "PlayResult" in d_all.columns else pd.Series("", index=d_all.index)
+
+            CA_SW = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+            CA_OUT = {"Out", "FieldersChoice", "Strikeout", "Sacrifice", "SacrificeFly", "SacrificeBunt", "Error"}
+            CA_HIT = {"Single", "Double", "Triple", "HomeRun"}
+            CA_PA = {"Single", "Double", "Triple", "HomeRun", "Out", "FieldersChoice",
+                     "Strikeout", "Walk", "HitByPitch", "SacrificeFly", "SacrificeBunt",
+                     "Sacrifice", "Error", "CatcherInterference"}
+
+            COUNT_GROUPS = [
+                ("Hitter's Count", [(2, 0), (3, 0), (3, 1)], "#1D9E75"),
+                ("Two Strikes", [(0, 2), (1, 2), (2, 2)], "#c0392b"),
+                ("First Pitch", [(0, 0)], "#185FA5"),
+                ("Even Count", [(1, 1)], "#E67E22"),
+            ]
+
+            for label, counts, color in COUNT_GROUPS:
+                mask = pd.Series(False, index=d_all.index)
+                for b, s in counts:
+                    mask = mask | (b_col.eq(b) & s_col.eq(s))
+
+                cd = d_all[mask]
+                if len(cd) < 8:
+                    continue
+
+                cd_pc = cd["PitchCall"].astype(str).str.strip()
+                cd_pr = cd["PlayResult"].astype(str).str.strip() if "PlayResult" in cd.columns else pd.Series("", index=cd.index)
+                cd_terminal = cd_pr.isin(CA_PA) | cd_pc.eq("HitByPitch")
+
+                n_pitches = len(cd)
+                n_sw = int(cd_pc.isin(CA_SW).sum())
+                sw_rate = n_sw / n_pitches if n_pitches > 0 else 0
+
+                n_pa = int(cd_terminal.sum())
+                n_hits = int((cd_terminal & cd_pr.isin(CA_HIT)).sum())
+                n_outs = int((cd_terminal & cd_pr.isin(CA_OUT)).sum())
+                n_ab = n_pa - int((cd_terminal & (cd_pr.eq("Walk") | cd_pc.eq("HitByPitch"))).sum())
+                ba = n_hits / n_ab if n_ab > 0 else None
+
+                # Chase rate in this count
+                if "PlateLocSide" in cd.columns and "PlateLocHeight" in cd.columns:
+                    ls = pd.to_numeric(cd["PlateLocSide"], errors="coerce")
+                    lh = pd.to_numeric(cd["PlateLocHeight"], errors="coerce")
+                    oz = ~(ls.between(ZONE_LEFT, ZONE_RIGHT) & lh.between(ZONE_BOTTOM, ZONE_TOP)) & ls.notna() & lh.notna()
+                    n_oz = int(oz.sum())
+                    chase_rate = int((oz & cd_pc.isin(CA_SW)).sum()) / n_oz if n_oz > 5 else None
+                else:
+                    chase_rate = None
+
+                # Build insight text
+                parts = []
+                if ba is not None:
+                    ba_fmt = f"{ba:.3f}" if ba >= 1.0 else f".{int(round(ba*1000)):03d}"
+                    parts.append(f"{ba_fmt} BA")
+                parts.append(f"{sw_rate:.0%} swing rate")
+                if chase_rate is not None:
+                    parts.append(f"{chase_rate:.0%} chase rate")
+                stat_line = ", ".join(parts)
+
+                # Coaching advice based on count group
+                count_str = " / ".join(f"{b}-{s}" for b, s in counts)
+                if label == "Hitter's Count":
+                    if sw_rate >= 0.50 and ba is not None and ba >= 0.300:
+                        advice = "Aggressive and productive — keep hunting your pitch."
+                    elif sw_rate < 0.30:
+                        advice = "Not aggressive enough — this is your count, look to drive."
+                    else:
+                        advice = "Be selective but ready to attack a good pitch."
+                elif label == "Two Strikes":
+                    if chase_rate is not None and chase_rate >= 0.35:
+                        advice = "Chasing too much — shorten up and protect the zone."
+                    elif chase_rate is not None and chase_rate <= 0.15:
+                        advice = "Disciplined with two strikes — forces pitcher to throw strikes."
+                    else:
+                        advice = "Battle mode — fight off tough pitches, don't give away at-bats."
+                elif label == "First Pitch":
+                    if sw_rate >= 0.40 and ba is not None and ba >= 0.300:
+                        advice = "Aggressive first-pitch hitter and it's working — keep jumping early."
+                    elif sw_rate >= 0.40 and (ba is None or ba < 0.200):
+                        advice = "Swinging first pitch but not getting results — be more selective early."
+                    elif sw_rate < 0.20:
+                        advice = "Very passive first pitch — could be missing hittable pitches early."
+                    else:
+                        advice = "Balanced first-pitch approach."
+                else:  # Even
+                    advice = "Key count — the at-bat often turns here."
+
+                count_approach_items.append(_badge_item(label.upper(), color, count_str,
+                    f"{stat_line}. {advice} ({n_pitches} pitches)"))
+
+        sec_count = _section("Count Approach", count_approach_items[:4])
+
+        # Assemble in priority order: actionable first, then summaries
+        sections = [s for s in [
+            sec_count,       # Count Approach (most actionable)
+            sec_matchups,    # Pitch Matchups (actionable)
+            sec_location,    # Pitch Location (visual summary)
+            sec_spray,       # Spray Chart (visual summary)
+            sec_discipline,  # Plate Discipline (visual summary)
+        ] if s is not None]
 
         if not sections:
             return ui.div(
@@ -5209,15 +6793,16 @@ def server(input, output, session):
                 fontsize=10, color="#888",
             )
 
-        # Legend below the chart, inside a box, outside the axes
+        # Legend below x-axis label
         legend_handles = [
             plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=c, markersize=6, label=l)
             for l, c in [("GB", "#D85A30"), ("LD", "#1D9E75"),
                          ("FB", "#378ADD"), ("PU", "#888780")]
         ]
-        leg = fig.legend(
+        ax.legend(
             handles=legend_handles,
-            loc="lower center",
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.12),
             fontsize=7,
             frameon=True,
             fancybox=True,
@@ -5229,7 +6814,6 @@ def server(input, output, session):
             columnspacing=0.8,
             borderpad=0.4,
         )
-        leg.get_frame().set_linewidth(0.8)
 
         fig.subplots_adjust(top=0.96, bottom=0.18, left=0.14, right=0.96)
 
@@ -5394,5 +6978,596 @@ def server(input, output, session):
         plt.close(fig)
         return fig
 
+    # ------------------------------------------------------------------
+    # HitTrax (session-aggregated batter data)
+    # ------------------------------------------------------------------
+    @reactive.calc
+    def hittrax_data():
+        """Filtered HitTrax rows for the selected player + date range."""
+        if HITTRAX_DF.empty:
+            return None
+        player = input.player()
+        if not player:
+            return None
+        start = input.date_start()
+        end = input.date_end()
+        if start is None or end is None:
+            return None
+
+        d = HITTRAX_DF[
+            (HITTRAX_DF["Player"] == player)
+            & (HITTRAX_DF["DateOnly"] >= start)
+            & (HITTRAX_DF["DateOnly"] <= end)
+        ].copy()
+        if d.empty:
+            return None
+        d = d.sort_values("Date").reset_index(drop=True)
+        return d
+
+    @reactive.calc
+    def hittrax_data_active():
+        """HitTrax sessions with AB > 0 (real swings only)."""
+        d = hittrax_data()
+        if d is None or d.empty:
+            return d
+        ab = pd.to_numeric(d["AB"], errors="coerce").fillna(0)
+        return d[ab > 0].reset_index(drop=True)
+
+    def _click_to_session_key(click, d):
+        """Convert a plot click's x-coordinate (data coords) to a session ISO date string."""
+        if click is None or d is None or d.empty:
+            return None
+        x = click.get("x")
+        if x is None:
+            return None
+        idx = int(round(float(x)))
+        if idx < 0 or idx >= len(d):
+            return None
+        return pd.to_datetime(d["Date"].iloc[idx]).strftime("%Y-%m-%d")
+
+    @reactive.effect
+    @reactive.event(input.hittrax_max_distance_plot_click)
+    def _hittrax_dist_click():
+        click = input.hittrax_max_distance_plot_click()
+        key = _click_to_session_key(click, hittrax_data_active())
+        if key is None:
+            return
+        current = selected_hittrax_session.get()
+        selected_hittrax_session.set("" if current == key else key)
+
+    @reactive.effect
+    @reactive.event(input.hittrax_batted_ball_mix_plot_click)
+    def _hittrax_mix_click():
+        click = input.hittrax_batted_ball_mix_plot_click()
+        key = _click_to_session_key(click, hittrax_data_active())
+        if key is None:
+            return
+        current = selected_hittrax_session.get()
+        selected_hittrax_session.set("" if current == key else key)
+
+    @reactive.effect
+    @reactive.event(input.clicked_hittrax_session)
+    def _hittrax_session_log_click():
+        val = input.clicked_hittrax_session()
+        if not val:
+            return
+        current = selected_hittrax_session.get()
+        if val == "__reset__" or val == current:
+            selected_hittrax_session.set("")
+        else:
+            selected_hittrax_session.set(str(val))
+
+    @reactive.effect
+    def _reset_hittrax_selection_on_player_change():
+        """Clear session selection when player or date range changes."""
+        input.player()
+        input.date_start()
+        input.date_end()
+        input.data_source()
+        selected_hittrax_session.set("")
+
+    @reactive.calc
+    def hittrax_team_benchmarks():
+        """Team-level benchmarks across all Purdue HitTrax players in date range."""
+        if HITTRAX_DF.empty:
+            return {}
+        start = input.date_start()
+        end = input.date_end()
+        if start is None or end is None:
+            return {}
+
+        df = HITTRAX_DF[
+            (HITTRAX_DF["DateOnly"] >= start)
+            & (HITTRAX_DF["DateOnly"] <= end)
+        ].copy()
+        # Active sessions only (AB > 0)
+        ab = pd.to_numeric(df["AB"], errors="coerce").fillna(0)
+        df = df[ab > 0]
+        if df.empty:
+            return {}
+
+        dist = pd.to_numeric(df["Dist"], errors="coerce").dropna()
+        maxv = pd.to_numeric(df["MaxV"], errors="coerce").dropna()
+        avgv = pd.to_numeric(df["AvgV"], errors="coerce").dropna()
+
+        return {
+            "avg_dist": float(dist.mean()) if len(dist) else 0.0,
+            "max_dist": float(dist.max()) if len(dist) else 0.0,
+            "avg_max_ev": float(maxv.mean()) if len(maxv) else 0.0,
+            "max_max_ev": float(maxv.max()) if len(maxv) else 0.0,
+            "avg_avg_ev": float(avgv.mean()) if len(avgv) else 0.0,
+            "n_sessions": int(len(df)),
+            "n_players": int(df["Player"].nunique()) if "Player" in df.columns else 0,
+        }
+
+    @reactive.calc
+    def hittrax_summary_text():
+        """Inline summary line for the HitTrax Batter Profile header."""
+        d = hittrax_data_active()
+        if d is None or d.empty:
+            return None
+        player_raw = input.player() or ""
+        name = format_display_name(player_raw) or "Batter"
+
+        # Look up BatterSide from Trackman data (not in HitTrax files)
+        side = ""
+        if not MASTER_DF.empty and "Batter" in MASTER_DF.columns and "BatterSide" in MASTER_DF.columns:
+            match = MASTER_DF[MASTER_DF["Batter"].astype(str).str.strip() == player_raw]
+            if not match.empty:
+                side_raw = str(match["BatterSide"].iloc[0]).strip()
+                if side_raw and side_raw.lower() not in ("nan", ""):
+                    side = side_raw
+
+        n_sessions = len(d)
+        parts = [name]
+        if side:
+            parts.append(f"Bats: {side}")
+        parts.append(f"{n_sessions} session{'s' if n_sessions != 1 else ''}")
+        return " | ".join(parts)
+
+    @output
+    @render.ui
+    def hittrax_aggregate_stats():
+        d = hittrax_data_active()
+        if d is None or d.empty:
+            return ui.div(
+                "No HitTrax sessions in the selected date range.",
+                style="padding:14px;color:#888;text-align:center;",
+            )
+
+        total_sessions = len(d)
+        total_ab = int(pd.to_numeric(d["AB"], errors="coerce").fillna(0).sum()) if "AB" in d.columns else 0
+        total_h  = int(pd.to_numeric(d["H"],  errors="coerce").fillna(0).sum()) if "H"  in d.columns else 0
+        total_ebh= int(pd.to_numeric(d["EBH"],errors="coerce").fillna(0).sum()) if "EBH" in d.columns else 0
+        total_hr = int(pd.to_numeric(d["HR"], errors="coerce").fillna(0).sum()) if "HR" in d.columns else 0
+
+        # Weighted AVG / SLG by AB
+        ba = (total_h / total_ab) if total_ab > 0 else 0.0
+        if total_ab > 0 and "SLG" in d.columns:
+            slg_series = pd.to_numeric(d["SLG"], errors="coerce").fillna(0)
+            ab_series  = pd.to_numeric(d["AB"],  errors="coerce").fillna(0)
+            tb = (slg_series * ab_series).sum()
+            slg = tb / total_ab
+        else:
+            slg = 0.0
+        ops = ba + slg
+
+        # HHA weighted by AB
+        def weighted_rate(col):
+            if col not in d.columns or total_ab == 0:
+                return 0.0
+            s = pd.to_numeric(d[col], errors="coerce").fillna(0)
+            a = pd.to_numeric(d["AB"], errors="coerce").fillna(0)
+            return (s * a).sum() / a.sum() if a.sum() > 0 else 0.0
+        hha = weighted_rate("HHA")
+
+        # Exit velocity
+        if "AvgV" in d.columns and total_ab > 0:
+            avgv_series = pd.to_numeric(d["AvgV"], errors="coerce").fillna(0)
+            ab_series   = pd.to_numeric(d["AB"],   errors="coerce").fillna(0)
+            avg_ev = (avgv_series * ab_series).sum() / ab_series.sum() if ab_series.sum() > 0 else 0.0
+        else:
+            avg_ev = 0.0
+        max_ev = float(pd.to_numeric(d["MaxV"], errors="coerce").max()) if "MaxV" in d.columns else 0.0
+
+        # Distance — avg max-dist across sessions (typical) and season peak
+        avg_dist = float(pd.to_numeric(d["Dist"], errors="coerce").mean()) if "Dist" in d.columns else 0.0
+        max_dist = float(pd.to_numeric(d["Dist"], errors="coerce").max()) if "Dist" in d.columns else 0.0
+
+        # Batted-ball mix weighted by AB
+        ld_pct = weighted_rate("LD %")
+        fb_pct = weighted_rate("FB %")
+        gb_pct = weighted_rate("GB %")
+
+        def fmt_rate(v):
+            if v is None:
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v*1000)):03d}"
+
+        def stat_tile(label, value, sub=""):
+            return ui.div(
+                ui.div(label, style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px;"),
+                ui.div(value, style="font-size:22px;font-weight:700;color:#1a3a6b;line-height:1.1;"),
+                ui.div(sub, style="font-size:10px;color:#888;margin-top:1px;") if sub else None,
+                style=(
+                    "background:#fff;border:1px solid #e0e0e0;border-radius:8px;"
+                    "padding:10px 10px;text-align:center;min-width:0;"
+                ),
+            )
+
+        def category(title, accent, tiles):
+            return ui.div(
+                ui.div(
+                    title,
+                    style=(
+                        f"font-size:10px;font-weight:800;color:{accent};"
+                        "text-transform:uppercase;letter-spacing:1.0px;"
+                        "padding:4px 0 8px 2px;"
+                    ),
+                ),
+                ui.div(
+                    *tiles,
+                    style="display:grid;grid-template-columns:1fr 1fr;gap:8px;",
+                ),
+                style=(
+                    f"padding:12px 14px;border-left:3px solid {accent};"
+                    "background:#fafafa;border-radius:6px;"
+                ),
+            )
+
+        return ui.div(
+            ui.div(
+                category("Contact", "#27ae60", [
+                    stat_tile("AB", f"{total_ab}"),
+                    stat_tile("H", f"{total_h}"),
+                    stat_tile("AVG", fmt_rate(ba)),
+                    stat_tile("HHA", fmt_rate(hha)),
+                ]),
+                category("Power", "#c0392b", [
+                    stat_tile("EBH", f"{total_ebh}"),
+                    stat_tile("HR", f"{total_hr}"),
+                    stat_tile("SLG", fmt_rate(slg)),
+                    stat_tile("OPS", fmt_rate(ops)),
+                ]),
+                category("Exit Velo", "#185FA5", [
+                    stat_tile("Avg EV", f"{avg_ev:.1f}", "mph"),
+                    stat_tile("Max EV", f"{max_ev:.1f}", "mph"),
+                    stat_tile("Avg Dist", f"{avg_dist:.0f}", "ft"),
+                    stat_tile("Max Dist", f"{max_dist:.0f}", "ft"),
+                ]),
+                category("Batted Ball", "#d4a017", [
+                    stat_tile("LD %", f"{ld_pct:.0f}%"),
+                    stat_tile("FB %", f"{fb_pct:.0f}%"),
+                    stat_tile("GB %", f"{gb_pct:.0f}%"),
+                    stat_tile("Sessions", f"{total_sessions}"),
+                ]),
+                style=(
+                    "display:grid;grid-template-columns:repeat(4, 1fr);"
+                    "gap:12px;padding:14px;"
+                ),
+            ),
+        )
+
+    @output
+    @render.plot
+    def hittrax_batted_ball_mix_plot():
+        d = hittrax_data_active()
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#fafafa")
+
+        if d is None or d.empty:
+            ax.text(0.5, 0.5, "No HitTrax data", ha="center", va="center",
+                    transform=ax.transAxes, color="#888", fontsize=12)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.close(fig)
+            return fig
+
+        dates = pd.to_datetime(d["Date"])
+        ld = pd.to_numeric(d.get("LD %", pd.Series(0, index=d.index)), errors="coerce").fillna(0)
+        fb = pd.to_numeric(d.get("FB %", pd.Series(0, index=d.index)), errors="coerce").fillna(0)
+        gb = pd.to_numeric(d.get("GB %", pd.Series(0, index=d.index)), errors="coerce").fillna(0)
+
+        # X positions: integer index so bars are evenly spaced
+        x = np.arange(len(d))
+        width = 0.7
+
+        # Selection dimming
+        sel = selected_hittrax_session.get()
+        date_keys = [pd.to_datetime(dt).strftime("%Y-%m-%d") for dt in dates]
+        if sel:
+            alphas = [1.0 if k == sel else 0.22 for k in date_keys]
+        else:
+            alphas = [1.0] * len(d)
+
+        ld_bars = ax.bar(x, ld, width, color="#27ae60", label="LD%", zorder=3)
+        fb_bars = ax.bar(x, fb, width, bottom=ld, color="#3498db", label="FB%", zorder=3)
+        gb_bars = ax.bar(x, gb, width, bottom=ld + fb, color="#d4a017", label="GB%", zorder=3)
+        for bars_group in (ld_bars, fb_bars, gb_bars):
+            for bar, a in zip(bars_group, alphas):
+                bar.set_alpha(a)
+
+        # Highlight outline on selected session
+        if sel:
+            for i, k in enumerate(date_keys):
+                if k == sel:
+                    ax.add_patch(Rectangle(
+                        (x[i] - width/2, 0), width, 100,
+                        fill=False, edgecolor="#1a3a6b", lw=2, zorder=4,
+                    ))
+
+        # In-bar labels (only if > 8%)
+        for i, (l, f, g) in enumerate(zip(ld, fb, gb)):
+            if l >= 8:
+                ax.text(i, l/2, f"{int(l)}", ha="center", va="center",
+                        fontsize=8, color="white", fontweight="bold")
+            if f >= 8:
+                ax.text(i, l + f/2, f"{int(f)}", ha="center", va="center",
+                        fontsize=8, color="white", fontweight="bold")
+            if g >= 8:
+                ax.text(i, l + f + g/2, f"{int(g)}", ha="center", va="center",
+                        fontsize=8, color="white", fontweight="bold")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([dt.strftime("%b %d") for dt in dates],
+                           rotation=30, ha="right", fontsize=9)
+        ax.set_ylabel("Batted Ball Mix (%)", fontsize=11, color="#444")
+        ax.set_ylim(0, 105)
+        ax.set_yticks([0, 25, 50, 75, 100])
+        ax.grid(True, axis="y", color="#e0e0e0", lw=0.5, zorder=0)
+        ax.set_axisbelow(True)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#ccc")
+        ax.spines["bottom"].set_color("#ccc")
+        ax.tick_params(colors="#666", labelsize=9)
+
+        ax.legend(loc="upper right", frameon=True, fontsize=9,
+                  framealpha=0.95, edgecolor="#ccc", ncol=3,
+                  bbox_to_anchor=(1.0, 1.12))
+
+        fig.subplots_adjust(left=0.09, right=0.97, top=0.88, bottom=0.20)
+        plt.close(fig)
+        return fig
+
+    @output
+    @render.plot
+    def hittrax_max_distance_plot():
+        d = hittrax_data_active()
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#fafafa")
+
+        if d is None or d.empty:
+            ax.text(0.5, 0.5, "No HitTrax data", ha="center", va="center",
+                    transform=ax.transAxes, color="#888", fontsize=12)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.close(fig)
+            return fig
+
+        dates = pd.to_datetime(d["Date"])
+        dist  = pd.to_numeric(d["Dist"], errors="coerce").fillna(0)
+        maxv  = pd.to_numeric(d["MaxV"], errors="coerce").fillna(0)
+
+        x = np.arange(len(d))
+        width = 0.72
+
+        # Color bars by Max EV — links power output to contact quality
+        if (maxv > 0).any():
+            ev_min = float(maxv[maxv > 0].min())
+            ev_max = float(maxv.max())
+        else:
+            ev_min, ev_max = 0.0, 1.0
+        span = max(ev_max - ev_min, 1)
+
+        def bar_color(v):
+            if v <= 0:
+                return "#dddddd"
+            t = (v - ev_min) / span
+            t = max(0, min(1, t))
+            r1, g1, b1 = 52, 152, 219
+            r2, g2, b2 = 192, 57, 43
+            r = int(r1 + (r2 - r1) * t)
+            g = int(g1 + (g2 - g1) * t)
+            b = int(b1 + (b2 - b1) * t)
+            return f"#{r:02x}{g:02x}{b:02x}"
+
+        colors = [bar_color(v) for v in maxv]
+
+        # Selection: dim non-selected bars, highlight selected
+        sel = selected_hittrax_session.get()
+        date_keys = [pd.to_datetime(dt).strftime("%Y-%m-%d") for dt in dates]
+        if sel:
+            alphas = [1.0 if k == sel else 0.22 for k in date_keys]
+            edge_colors = ["#1a3a6b" if k == sel else "white" for k in date_keys]
+            edge_widths = [2.0 if k == sel else 0.6 for k in date_keys]
+            bars = ax.bar(x, dist, width, color=colors, zorder=3,
+                          edgecolor=edge_colors, lw=edge_widths)
+            for bar, a in zip(bars, alphas):
+                bar.set_alpha(a)
+        else:
+            ax.bar(x, dist, width, color=colors, zorder=3,
+                   edgecolor="white", lw=0.6)
+
+        season_max = float(dist.max()) if len(dist) else 0
+        for i, v in enumerate(dist):
+            if v > 0:
+                ax.text(i, v + season_max * 0.02 + 2, f"{int(v)}",
+                        ha="center", va="bottom",
+                        fontsize=8, color="#444", fontweight="bold")
+
+        # Team Max (red dashed) — best single-session max-dist across all Purdue HitTrax
+        bench = hittrax_team_benchmarks()
+        team_max = float(bench.get("max_dist", 0.0))
+
+        if team_max > 0:
+            ax.axhline(team_max, color="#c0392b", ls="--", lw=1.5, alpha=0.9, zorder=2)
+            ax.text(
+                len(d) - 0.5, team_max + 2,
+                f"Team Max: {int(round(team_max))} ft",
+                ha="right", va="bottom",
+                fontsize=9, color="#c0392b", fontweight="bold",
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([dt.strftime("%b %d") for dt in dates],
+                           rotation=30, ha="right", fontsize=9)
+        ax.set_ylabel("Max Distance (ft)", fontsize=11, color="#444")
+        # Include Team Max in y-limit so the top reference line has headroom
+        y_top = max(season_max, team_max) if (season_max > 0 or team_max > 0) else 1
+        ax.set_ylim(0, y_top * 1.18)
+        ax.grid(True, axis="y", color="#e0e0e0", lw=0.5, zorder=0)
+        ax.set_axisbelow(True)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#ccc")
+        ax.spines["bottom"].set_color("#ccc")
+        ax.tick_params(colors="#666", labelsize=9)
+
+        ax.text(
+            0.02, 0.95, "Bar color = session Max EV",
+            transform=ax.transAxes, ha="left", va="top",
+            fontsize=9, color="#666", style="italic",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor="#ccc", lw=0.5),
+        )
+
+        fig.subplots_adjust(left=0.09, right=0.97, top=0.94, bottom=0.20)
+        plt.close(fig)
+        return fig
+
+    @output
+    @render.ui
+    def hittrax_session_log():
+        d = hittrax_data_active()
+        if d is None or d.empty:
+            return ui.div(
+                "No sessions to display.",
+                style="padding:14px;color:#888;text-align:center;",
+            )
+
+        # Sort newest first for display
+        d = d.sort_values("Date", ascending=False).reset_index(drop=True)
+
+        def fmt_rate(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return "—"
+            if pd.isna(v):
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v*1000)):03d}"
+
+        def fmt_int(v):
+            try:
+                return f"{int(float(v))}"
+            except (TypeError, ValueError):
+                return "—"
+
+        def fmt_f1(v):
+            try:
+                v = float(v)
+                if pd.isna(v):
+                    return "—"
+                return f"{v:.1f}"
+            except (TypeError, ValueError):
+                return "—"
+
+        headers = [
+            "Date", "AB", "H", "EBH", "HR",
+            "AVG", "SLG", "HHA",
+            "Avg EV", "Max EV", "Dist",
+            "LD%", "FB%", "GB%",
+        ]
+        header_cells = [
+            ui.tags.th(h, style=(
+                "text-align:center;padding:8px 10px;font-size:11px;"
+                "background:#2a3a5e;color:#fff;font-weight:700;"
+                "text-transform:uppercase;letter-spacing:0.4px;"
+                "border-bottom:2px solid #1a2a4e;"
+            )) for h in headers
+        ]
+
+        sel = selected_hittrax_session.get()
+
+        rows = []
+        for i, r in d.iterrows():
+            date_key = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
+            is_selected = (sel == date_key)
+
+            if is_selected:
+                row_bg = "#fff8e1"  # warm highlight
+                font_size = "18px"
+                font_weight = "800"
+                padding = "12px 10px"
+            else:
+                row_bg = "#ffffff" if i % 2 == 0 else "#fafafa"
+                font_size = "12px"
+                font_weight = "400"
+                padding = "7px 10px"
+
+            border_left = "border-left:4px solid #DDB945;" if is_selected else "border-left:4px solid transparent;"
+            base_td = (
+                f"padding:{padding};text-align:center;font-size:{font_size};color:#222;"
+                f"font-weight:{font_weight};"
+                f"background:{row_bg};border-bottom:1px solid #eee;"
+            )
+            # Date column is always bold; selected = even bolder + bigger
+            date_weight = "800" if is_selected else "700"
+            date_td = (
+                f"padding:{padding};font-size:{font_size};font-weight:{date_weight};color:#222;"
+                f"background:{row_bg};border-bottom:1px solid #eee;white-space:nowrap;{border_left}"
+            )
+            cells = [
+                ui.tags.td(pd.to_datetime(r["Date"]).strftime("%b %d, %Y"), style=date_td),
+                ui.tags.td(fmt_int(r.get("AB", 0)),  style=base_td),
+                ui.tags.td(fmt_int(r.get("H", 0)),   style=base_td),
+                ui.tags.td(fmt_int(r.get("EBH", 0)), style=base_td),
+                ui.tags.td(fmt_int(r.get("HR", 0)),  style=base_td),
+                ui.tags.td(fmt_rate(r.get("AVG", 0)), style=base_td),
+                ui.tags.td(fmt_rate(r.get("SLG", 0)), style=base_td),
+                ui.tags.td(fmt_rate(r.get("HHA", 0)), style=base_td),
+                ui.tags.td(fmt_f1(r.get("AvgV", 0)), style=base_td),
+                ui.tags.td(fmt_f1(r.get("MaxV", 0)), style=base_td),
+                ui.tags.td(fmt_int(r.get("Dist", 0)), style=base_td),
+                ui.tags.td(f"{fmt_int(r.get('LD %', 0))}%",
+                           style=base_td + f"color:#27ae60;font-weight:{'800' if is_selected else '700'};"),
+                ui.tags.td(f"{fmt_int(r.get('FB %', 0))}%",
+                           style=base_td + f"color:#3498db;font-weight:{'800' if is_selected else '700'};"),
+                ui.tags.td(f"{fmt_int(r.get('GB %', 0))}%",
+                           style=base_td + f"color:#d4a017;font-weight:{'800' if is_selected else '700'};"),
+            ]
+            rows.append(
+                ui.tags.tr(
+                    *cells,
+                    {"data-session-key": date_key, "class": "hittrax-session-row"},
+                    style="cursor:pointer;",
+                )
+            )
+
+        return ui.div(
+            ui.tags.table(
+                ui.tags.thead(ui.tags.tr(*header_cells)),
+                ui.tags.tbody(*rows),
+                style="width:100%;border-collapse:collapse;",
+            ),
+            ui.tags.script(ui.HTML(
+                "(function(){"
+                "  $(document).off('click.hittraxrow').on('click.hittraxrow', '.hittrax-session-row', function(){"
+                "    var k = $(this).attr('data-session-key');"
+                "    if (k) { Shiny.setInputValue('clicked_hittrax_session', k, {priority:'event'}); }"
+                "  });"
+                "})();"
+            )),
+            style="padding:0;overflow-x:auto;",
+        )
+
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
+
