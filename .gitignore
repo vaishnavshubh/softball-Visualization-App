@@ -1,2 +1,9 @@
 # Local Trackman v3 CSV tree (data loaded from BigQuery in production)
 app/data/v3/
+
+# GCP service account key (never commit; optional bundle for shinyapps.io deploy)
+app/gcp_sa.json
+
+# rsconnect-python deployment metadata (local only)
+app/rsconnect-python/
+rsconnect-python/

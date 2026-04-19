@@ -1,0 +1,15 @@
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.git
+.gitignore
+data/v3
+gcp_sa.json
+rsconnect-python
+*.md
+.DS_Store
+.csv_metadata_cache.json

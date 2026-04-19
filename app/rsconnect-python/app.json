@@ -1,11 +1,11 @@
 {
     "https://api.shinyapps.io": {
         "server_url": "https://api.shinyapps.io",
-        "filename": "/Users/ngoc/Desktop/Softball Phase 1/app",
-        "app_url": "https://tamdang.shinyapps.io/softball-phase-111/",
-        "app_id": "16797833",
+        "filename": "/Users/shubhvaishnav/Desktop/Cursor Repo/softball-Visualization-App-1/app",
+        "app_url": "https://shubhvaishnav.shinyapps.io/softball_dashboard/",
+        "app_id": "17108139",
         "app_guid": null,
-        "title": "softball-phase-111",
+        "title": "Softball Dashboard",
         "app_mode": "python-shiny",
         "app_store_version": 1
     }

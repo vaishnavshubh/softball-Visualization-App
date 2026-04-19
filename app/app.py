@@ -11,6 +11,7 @@ Layout (matches sketch):
       2x2 grid: Usage pie, Location, Summary table, Movement
 """
 
+import json
 import math
 import os
 from datetime import date
@@ -26,6 +27,7 @@ import numpy as np
 import pandas as pd
 from google.api_core.client_options import ClientOptions
 from google.cloud import bigquery
+from google.oauth2 import service_account
 from shiny import App, render, ui, reactive
 
 
@@ -999,19 +1001,44 @@ BQ_PROJECT = "softball-492603"
 _BQ_FACT_TABLE = f"`{BQ_PROJECT}.softball_curated.fact_pitch`"
 _BQ_DIM_TEAM = f"`{BQ_PROJECT}.softball_curated.dim_team`"
 
-try:
-    bq_client = bigquery.Client(
-        project=BQ_PROJECT,
-        client_options=ClientOptions(quota_project_id=BQ_PROJECT),
-    )
-except Exception:
-    bq_client = None
+
+_GCP_SA_FILE = os.path.join(APP_DIR, "gcp_sa.json")
+
+
+def _create_bq_client():
+    """Credentials order: env JSON → app/gcp_sa.json (e.g. shinyapps.io) → ADC (local gcloud)."""
+    opts = ClientOptions(quota_project_id=BQ_PROJECT)
+    raw = os.environ.get("GCP_SERVICE_ACCOUNT_JSON", "").strip()
+    if raw:
+        try:
+            info = json.loads(raw)
+            creds = service_account.Credentials.from_service_account_info(info)
+            return bigquery.Client(
+                project=BQ_PROJECT, credentials=creds, client_options=opts
+            )
+        except Exception:
+            pass
+    if os.path.isfile(_GCP_SA_FILE):
+        try:
+            creds = service_account.Credentials.from_service_account_file(_GCP_SA_FILE)
+            return bigquery.Client(
+                project=BQ_PROJECT, credentials=creds, client_options=opts
+            )
+        except Exception:
+            pass
+    try:
+        return bigquery.Client(project=BQ_PROJECT, client_options=opts)
+    except Exception:
+        return None
+
+
+bq_client = _create_bq_client()
 
 
 def _fetch_dim_team_choices() -> dict:
     if bq_client is None:
         return {
-            "": "— Run: gcloud auth application-default login —",
+            "": "— Add app/gcp_sa.json (shinyapps) or GCP_SERVICE_ACCOUNT_JSON / gcloud ADC —",
         }
     try:
         sql = f"SELECT team_code, display_name FROM {_BQ_DIM_TEAM} ORDER BY display_name"
