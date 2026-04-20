@@ -1309,7 +1309,10 @@ def compute_comparison_metrics(df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 # Prediction tab: descriptive + ML pitch-type analysis
 # ---------------------------------------------------------------------------
-PREDICTION_HARD_CONTACT_EV = 85.0
+# D1-oriented EV bands for descriptive fallback interpretation.
+PREDICTION_EV_TYPICAL_MIN = 70.0
+PREDICTION_EV_TYPICAL_MAX = 75.0
+PREDICTION_HARD_CONTACT_EV = 80.0
 PREDICTION_MIN_STRIKE_N = 12
 PREDICTION_MIN_SWINGS_PUTAWAY = 8
 PREDICTION_MIN_CONTACT_CAUTION = 5
@@ -1347,7 +1350,20 @@ def build_prediction_by_pitch_type(df: pd.DataFrame) -> pd.DataFrame:
         swing_count = int(is_swing.sum())
         whiff_count = int(is_whiff.sum())
         contact_count = int(is_contact.sum())
+        firm_contact_count = int(
+            (
+                in_play
+                & (ev_s >= PREDICTION_EV_TYPICAL_MAX)
+                & (ev_s < PREDICTION_HARD_CONTACT_EV)
+            ).sum()
+        )
         hard_contact_count = int((in_play & (ev_s >= PREDICTION_HARD_CONTACT_EV)).sum())
+        # Weighted damage score for fallback mode:
+        # firm (75-80) is directional, high-damage (80+) is primary risk.
+        hard_contact_score = (
+            ((0.5 * firm_contact_count) + hard_contact_count) / contact_count
+            if contact_count > 0 else np.nan
+        )
 
         rows.append({
             PITCH_TYPE_COL: ptype,
@@ -1359,7 +1375,7 @@ def build_prediction_by_pitch_type(df: pd.DataFrame) -> pd.DataFrame:
             "contact_count": contact_count,
             "whiff_pct": (whiff_count / swing_count) if swing_count > 0 else np.nan,
             "hard_contact_count": hard_contact_count,
-            "hard_contact_risk": (hard_contact_count / contact_count) if contact_count > 0 else np.nan,
+            "hard_contact_risk": hard_contact_score,
             "sample_warning": _prediction_sample_warning(n),
         })
 
@@ -1413,7 +1429,14 @@ def select_prediction_summary(pred: pd.DataFrame) -> dict:
     tier = tier[pd.notna(tier["hard_contact_risk"])]
     if not tier.empty and tier["hard_contact_count"].sum() > 0:
         best = tier.loc[tier["hard_contact_risk"].idxmax()]
-        out["caution"] = {**_build(best), "coach_blurb": f"High share of hard contact (EV ≥ {int(PREDICTION_HARD_CONTACT_EV)} mph) — be selective with location."}
+        out["caution"] = {
+            **_build(best),
+            "coach_blurb": (
+                f"Elevated firm/high-damage contact profile (75-80 and {int(PREDICTION_HARD_CONTACT_EV)}+ mph) "
+                f"vs D1 baseline (~{int(PREDICTION_EV_TYPICAL_MIN)}-{int(PREDICTION_EV_TYPICAL_MAX)} mph). "
+                "Be selective with location."
+            ),
+        }
     else:
         out["caution"] = {"pitch": "—", "coach_blurb": "Not enough hard contact data to flag a caution pitch."}
 

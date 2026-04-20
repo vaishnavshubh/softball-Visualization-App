@@ -1,6 +1,6 @@
 # Prediction Tab Guide
 
-Last updated: 2026-04-19
+Last updated: 2026-04-20
 
 This guide documents the current behavior of the **Prediction** tab in the app, including ML mode, fallback behavior, and how to interpret each section.
 
@@ -88,6 +88,19 @@ Implemented in `app/prediction_pipeline.py`.
 - `Hard Contact Risk`
 - `Role` (`Command`, `Put-away`, `Risk`, `Situational`)
 - `Recommendation`
+
+## EV Interpretation Bands (Coach Context)
+
+Hard-contact interpretation is calibrated to typical D1 softball ranges:
+
+- `70-75 mph`: typical contact
+- `75-80 mph`: firm contact
+- `80+ mph`: high-damage contact
+
+In descriptive fallback mode, `Hard Contact Risk` reflects a weighted damage profile:
+
+- firm contact contributes directional risk
+- `80+ mph` contributes primary damage risk
 
 ### Descriptive fallback table columns
 

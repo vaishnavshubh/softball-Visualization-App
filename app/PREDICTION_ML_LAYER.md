@@ -47,7 +47,10 @@ For each pitch type, it computes:
 - **Swing events**: `StrikeSwinging`, `FoulBallFieldable`, `FoulBallNotFieldable`, `InPlay`
 - **Strike events**: `StrikeCalled`, `StrikeSwinging`, `FoulBallFieldable`, `FoulBallNotFieldable`, `InPlay`
 - **Contact events**: `FoulBallFieldable`, `FoulBallNotFieldable`, `InPlay`
-- **Descriptive hard contact threshold**: exit speed >= `85 mph` (`PREDICTION_HARD_CONTACT_EV`)
+- **Descriptive fallback EV bands**:
+  - typical D1 contact: `70-75 mph`
+  - firm contact: `75-80 mph`
+  - high-damage contact: `>=80 mph` (`PREDICTION_HARD_CONTACT_EV`)
 
 ### Descriptive recommendation selection
 
@@ -119,7 +122,7 @@ Built in `prepare_pitcher_ml_training_frame(df)`:
 - `y_whiff`: pitch event is exactly `StrikeSwinging`
 - `y_hard`: `InPlay` and exit speed >= `80 mph` (`ML_HARD_CONTACT_EV`)
 
-Note: ML hard-contact threshold (`80 mph`) is intentionally different from descriptive threshold (`85 mph`).
+Note: ML hard-contact threshold (`80 mph`) now aligns with the descriptive high-damage threshold.
 
 ---
 
