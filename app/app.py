@@ -1344,6 +1344,28 @@ app_ui = ui.page_fluid(
                 selected="all",
             ),
 
+            # Download one-page PDF of the current Home-tab profile
+            ui.tags.div(
+                ui.download_button(
+                    "download_report",
+                    "Download PDF Report",
+                    class_="btn",
+                    style=(
+                        "width:100%;"
+                        "background:#DDB945;"
+                        "border:1.5px solid #333;"
+                        "color:#111;"
+                        "font-weight:500;"
+                        "font-size:15px;"
+                        "padding:12px 16px;"
+                        "border-radius:10px;"
+                        "letter-spacing:0.2px;"
+                        "text-align:center;"
+                    ),
+                ),
+                style="margin-top:14px;",
+            ),
+
             class_="sidebar",
         ),
 
@@ -7568,6 +7590,243 @@ def server(input, output, session):
             style="padding:0;overflow-x:auto;",
         )
 
+    # ----------------------------------------------------------------------
+    # Download Report (home tab PDF for current profile)
+    # ----------------------------------------------------------------------
+    import pdf_report
+
+    def _safe_clean_filename_part(s: str) -> str:
+        """Strip whitespace + punctuation so filenames are safe on all OSes."""
+        s = str(s or "").strip()
+        out = "".join(ch if ch.isalnum() else "_" for ch in s)
+        # Collapse multiple underscores
+        while "__" in out:
+            out = out.replace("__", "_")
+        return out.strip("_") or "Player"
+
+    def _report_date_str() -> str:
+        """Use the filter's end date (what's IN the report) for the filename."""
+        d = input.date_end()
+        if d is None:
+            from datetime import date as _d
+            d = _d.today()
+        return d.isoformat()
+
+    def _report_filename() -> str:
+        ptype = input.player_type()
+        if ptype == "pitcher":
+            data = pitcher_data()
+            name_raw = (
+                data["Pitcher"].iloc[0]
+                if data is not None and not data.empty and "Pitcher" in data.columns
+                else ""
+            )
+            kind = "Pitcher"
+        else:
+            data = batter_data()
+            name_raw = (
+                data["Batter"].iloc[0]
+                if data is not None and not data.empty and "Batter" in data.columns
+                else ""
+            )
+            kind = "Batter"
+        name_clean = _safe_clean_filename_part(format_display_name(name_raw))
+        return f"Purdue_{kind}_{name_clean}_{_report_date_str()}.pdf"
+
+    @render.download(filename=_report_filename)
+    def download_report():
+        ptype = input.player_type()
+        if ptype == "pitcher":
+            data = pitcher_data()
+            if data is None or data.empty:
+                yield b""
+                return
+            name = format_display_name(
+                data["Pitcher"].iloc[0] if "Pitcher" in data.columns else ""
+            ) or "Pitcher"
+            hand = throws_to_short(
+                data["PitcherThrows"].iloc[0] if "PitcherThrows" in data.columns else ""
+            )
+            side_label = {
+                "all": "Combined View",
+                "right": "vs RHB",
+                "left": "vs LHB",
+            }.get(input.batter_side(), "Combined View")
+
+            # Build usage + metrics in the same way the UI does
+            usage = usage_df()
+            metrics = cached_pitch_metrics()
+            # Format the metrics for PDF display (same columns as usage_table)
+            if metrics is not None and not metrics.empty:
+                m = metrics.copy()
+                for c in ["max_velo", "avg_velo"]:
+                    m[c] = pd.to_numeric(m.get(c), errors="coerce").round(1)
+                m["spin_rate"] = pd.to_numeric(m.get("spin_rate"), errors="coerce").round(0)
+                for c in ["ivb_avg", "hb_avg"]:
+                    m[c] = m[c].map(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+                pct_cols = ["usage_pct", "strike_pct", "called_strike_pct",
+                            "swing_pct", "swstr_pct", "whiff_pct",
+                            "zone_swing_pct", "zone_contact_pct",
+                            "chase_pct", "chase_contact_pct"]
+                for c in pct_cols:
+                    if c in m.columns:
+                        m[c] = (pd.to_numeric(m[c], errors="coerce") * 100).round(1).astype(str) + "%"
+                m = m.rename(columns={
+                    PITCH_TYPE_COL: "Pitch",
+                    "pitch_count": "Count",
+                    "usage_pct": "Usage %",
+                    "max_velo": "Max Velo", "avg_velo": "Avg Velo",
+                    "spin_rate": "Spin Rate",
+                    "ivb_avg": "IVB Avg", "hb_avg": "HB Avg",
+                    "strike_pct": "Strike %",
+                    "swing_pct": "Swing %",
+                    "whiff_pct": "Whiff %",
+                    # Two-line headers so long names don't blow out column width
+                    "zone_swing_pct": "Zone\nSwing %",
+                    "zone_contact_pct": "Zone\nContact %",
+                    "chase_pct": "Chase %",
+                })
+                cols_keep = ["Pitch", "Count", "Usage %", "Max Velo", "Avg Velo",
+                             "Spin Rate", "IVB Avg", "HB Avg",
+                             "Strike %", "Swing %", "Whiff %",
+                             "Zone\nSwing %", "Zone\nContact %", "Chase %"]
+                cols_keep = [c for c in cols_keep if c in m.columns]
+                m = m[cols_keep]
+            else:
+                m = pd.DataFrame()
+
+            pdf_bytes = pdf_report.build_pitcher_pdf(
+                pitcher_df=data,
+                usage_df=usage,
+                summary_df=m,
+                name=name, hand=hand, side_label=side_label,
+                pitch_count=len(data),
+                data_through=input.date_end(),
+            )
+            yield pdf_bytes
+        else:
+            # Batter
+            data = batter_data()
+            if data is None or data.empty:
+                yield b""
+                return
+            bid = input.player()
+            name = format_display_name(
+                data["Batter"].iloc[0] if "Batter" in data.columns else ""
+            ) or "Batter"
+            side = str(data["BatterSide"].iloc[0]).strip() \
+                   if "BatterSide" in data.columns else ""
+            if side.lower() in ("nan", ""):
+                side = ""
+            hand_label = {
+                "all": "Combined View",
+                "right": "vs RHP",
+                "left": "vs LHP",
+            }.get(input.batter_side(), "Combined View")
+
+            stats = compute_batter_stats(data, bid)
+
+            def _fmt_ba_local(v):
+                if v is None:
+                    return "—"
+                if v >= 1.0:
+                    return f"{v:.3f}"
+                return f".{int(round(v * 1000)):03d}"
+
+            batting_row = {
+                "PA": stats["PA"], "AB": stats["AB"], "H": stats["H"],
+                "2B": stats["doubles"], "3B": stats["triples"], "HR": stats["HR"],
+                "BB": stats["BB"], "K": stats["K"], "HBP": stats["HBP"],
+                "BA": _fmt_ba_local(stats["BA"]),
+                "OBP": _fmt_ba_local(stats["OBP"]),
+                "SLG": _fmt_ba_local(stats["SLG"]),
+                "OPS": _fmt_ba_local(stats["OPS"]),
+                "wOBA": _fmt_ba_local(stats["wOBA"]),
+            }
+
+            # Build per-pitch breakdown same way as batter_pitch_table
+            SWING_EVENTS = {"StrikeSwinging", "FoulBallFieldable",
+                            "FoulBallNotFieldable", "InPlay"}
+            CONTACT_EVENTS = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+            def _pct_str(n, d):
+                return f"{n / d * 100:.1f}%" if d > 0 else "—"
+            rows = []
+            if PITCH_TYPE_COL in data.columns:
+                order = (
+                    data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL]), PITCH_TYPE_COL]
+                    .astype(str).value_counts().index.tolist()
+                )
+                for pt in order:
+                    ptd = data[data[PITCH_TYPE_COL].astype(str).str.strip() == pt]
+                    n = len(ptd)
+                    if n == 0:
+                        continue
+                    avg_velo = ptd["RelSpeed"].dropna().mean() \
+                        if "RelSpeed" in ptd.columns else None
+                    calls = ptd["PitchCall"].astype(str).str.strip() \
+                        if "PitchCall" in ptd.columns else pd.Series(dtype=str)
+                    n_swing = int(calls.isin(SWING_EVENTS).sum())
+                    n_whiff = int((calls == "StrikeSwinging").sum())
+                    n_contact = int(calls.isin(CONTACT_EVENTS).sum())
+                    loc_h = pd.to_numeric(ptd.get("PlateLocHeight"), errors="coerce")
+                    loc_s = pd.to_numeric(ptd.get("PlateLocSide"), errors="coerce")
+                    in_zone = (loc_h >= ZONE_BOTTOM) & (loc_h <= ZONE_TOP) \
+                              & (loc_s >= ZONE_LEFT) & (loc_s <= ZONE_RIGHT)
+                    out_zone = ~in_zone & loc_h.notna() & loc_s.notna()
+                    n_out = int(out_zone.sum())
+                    n_chase = int((out_zone & calls.isin(SWING_EVENTS)).sum())
+
+                    # Hitting outcomes per pitch type
+                    results = ptd["PlayResult"].astype(str).str.strip() \
+                        if "PlayResult" in ptd.columns else pd.Series(dtype=str)
+                    singles = int((results == "Single").sum())
+                    doubles = int((results == "Double").sum())
+                    triples = int((results == "Triple").sum())
+                    hr_cnt  = int((results == "HomeRun").sum())
+                    k_cnt   = int((results == "Strikeout").sum())
+                    hits    = singles + doubles + triples + hr_cnt
+                    ab_approx = (
+                        hits
+                        + int((results == "Out").sum())
+                        + int((results == "FieldersChoice").sum())
+                        + int((results == "Error").sum())
+                        + k_cnt
+                    )
+                    tb = singles + 2 * doubles + 3 * triples + 4 * hr_cnt
+
+                    def _ba_fmt(v):
+                        if v is None or pd.isna(v):
+                            return "—"
+                        if v >= 1.0:
+                            return f"{v:.3f}"
+                        return f".{int(round(v * 1000)):03d}"
+
+                    ba_val  = (hits / ab_approx) if ab_approx > 0 else None
+                    slg_val = (tb   / ab_approx) if ab_approx > 0 else None
+
+                    rows.append({
+                        "Pitch": pt,
+                        "Pitches Seen": n,
+                        "Avg Velo": f"{avg_velo:.1f}" if avg_velo and not pd.isna(avg_velo) else "—",
+                        "Swing %":   _pct_str(n_swing, n),
+                        "Whiff %":   _pct_str(n_whiff, n_swing),
+                        "Chase %":   _pct_str(n_chase, n_out),
+                        "Contact %": _pct_str(n_contact, n_swing),
+                        "1B": singles, "2B": doubles, "3B": triples, "HR": hr_cnt, "K": k_cnt,
+                        "BA":  _ba_fmt(ba_val),
+                        "SLG": _ba_fmt(slg_val),
+                    })
+            pitch_df = pd.DataFrame(rows) if rows else pd.DataFrame()
+
+            pdf_bytes = pdf_report.build_batter_pdf(
+                batter_df=data,
+                batting_line_row=batting_row,
+                pitch_breakdown_df=pitch_df,
+                name=name, side=side, hand_label=hand_label,
+                pa=stats["PA"],
+                data_through=input.date_end(),
+            )
+            yield pdf_bytes
+
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
-
