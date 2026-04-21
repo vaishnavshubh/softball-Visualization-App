@@ -1266,6 +1266,53 @@ app_ui = ui.page_fluid(
         class_="top-header",
     ),
 
+    # Injected CSS that reacts to the active main tab (e.g. hides the
+    # sidebar filters on the Custom Report tab where they don't apply).
+    ui.output_ui("tab_specific_css"),
+
+    # Spinner overlay for Custom Report preview outputs while recomputing.
+    ui.tags.style(
+        "@keyframes cr-spin { to { transform: translate(-50%, -50%) rotate(360deg); } }"
+        ".cr-preview .shiny-plot-output,"
+        ".cr-preview .shiny-html-output,"
+        ".cr-preview .shiny-table-output { position: relative; min-height: 40px; }"
+        ".cr-preview .shiny-plot-output.recalculating::after,"
+        ".cr-preview .shiny-html-output.recalculating::after,"
+        ".cr-preview .shiny-table-output.recalculating::after {"
+        "  content: '';"
+        "  position: absolute; top: 50%; left: 50%;"
+        "  width: 28px; height: 28px;"
+        "  border: 3px solid #e1e1e1;"
+        "  border-top-color: #185FA5;"
+        "  border-radius: 50%;"
+        "  animation: cr-spin 0.9s linear infinite;"
+        "  transform: translate(-50%, -50%);"
+        "  z-index: 10;"
+        "}"
+        ".cr-preview .shiny-plot-output.recalculating,"
+        ".cr-preview .shiny-html-output.recalculating,"
+        ".cr-preview .shiny-table-output.recalculating {"
+        "  opacity: 0.4; transition: opacity 0.15s ease;"
+        "}"
+    ),
+
+    # Rewrites Shiny's built-in "Upload complete" progress text to the
+    # grammatically cleaner "Upload Completed". Runs once on page load
+    # and watches for later re-renders of the file input.
+    ui.tags.script(ui.HTML(
+        "(function(){"
+        "  function fixUploadText(){"
+        "    document.querySelectorAll('.progress-bar').forEach(function(el){"
+        "      var t = (el.textContent || '').trim();"
+        "      if (t === 'Upload complete') { el.textContent = 'Upload Completed'; }"
+        "    });"
+        "  }"
+        "  fixUploadText();"
+        "  var mo = new MutationObserver(fixUploadText);"
+        "  mo.observe(document.body, {childList:true, subtree:true, characterData:true});"
+        "})();"
+    )),
+
     ui.tags.div(
         ui.tags.div(
             ui.tags.h4("Filters"),
@@ -1345,26 +1392,8 @@ app_ui = ui.page_fluid(
             ),
 
             # Download one-page PDF of the current Home-tab profile
-            ui.tags.div(
-                ui.download_button(
-                    "download_report",
-                    "Download PDF Report",
-                    class_="btn",
-                    style=(
-                        "width:100%;"
-                        "background:#DDB945;"
-                        "border:1.5px solid #333;"
-                        "color:#111;"
-                        "font-weight:500;"
-                        "font-size:15px;"
-                        "padding:12px 16px;"
-                        "border-radius:10px;"
-                        "letter-spacing:0.2px;"
-                        "text-align:center;"
-                    ),
-                ),
-                style="margin-top:14px;",
-            ),
+            # (only rendered when the Home tab is active).
+            ui.output_ui("sidebar_download_btn"),
 
             class_="sidebar",
         ),
@@ -2189,7 +2218,12 @@ def server(input, output, session):
 
         name = format_display_name(name_raw) or "Pitcher"
         hand = throws_to_short(throws_raw)
-        n_pitches = len(data)
+        # Count only pitches with a real tagged pitch type (matches the
+        # filtering used for charts and the summary table downstream).
+        if PITCH_TYPE_COL in data.columns:
+            n_pitches = int(is_valid_pitch_type(data[PITCH_TYPE_COL]).sum())
+        else:
+            n_pitches = len(data)
 
         side_label = {
             "all": "Combined View",
@@ -4711,7 +4745,84 @@ def server(input, output, session):
                         class_="panel",
                     ),
                 ),
-
+                ui.nav_panel(
+                    "Custom Report",
+                    ui.div(
+                        ui.div("Generate Custom Report from CSV", class_="profile-title"),
+                        ui.div(
+                            "Upload a TrackMan CSV, pick a pitcher or batter, and "
+                            "download the one-page profile as a PDF.",
+                            style=(
+                                "text-align:center;color:#555;font-size:14px;"
+                                "margin:0 0 18px 0;"
+                            ),
+                        ),
+                        ui.div(
+                            # Row 1: file upload spans the full width
+                            ui.input_file(
+                                "browse_file",
+                                "Upload CSV (TrackMan format)",
+                                multiple=False,
+                                accept=[".csv"],
+                                placeholder="Drop a file here or click Browse",
+                                width="100%",
+                            ),
+                            # Row 2: three selectors side by side
+                            ui.div(
+                                ui.input_radio_buttons(
+                                    "browse_player_type",
+                                    "Player Type",
+                                    choices={"pitcher": "Pitcher", "batter": "Batter"},
+                                    selected="pitcher",
+                                    inline=True,
+                                ),
+                                ui.input_select(
+                                    "browse_player",
+                                    "Player",
+                                    choices={"": "— upload a CSV —"},
+                                    width="100%",
+                                ),
+                                ui.input_select(
+                                    "browse_hand_filter",
+                                    "vs Batter Hand",  # updated reactively below
+                                    choices={
+                                        "all":   "Combined View",
+                                        "right": "vs Right",
+                                        "left":  "vs Left",
+                                    },
+                                    selected="all",
+                                    width="100%",
+                                ),
+                                style=(
+                                    "display:grid;"
+                                    "grid-template-columns:auto 2fr 1fr;"
+                                    "gap:22px;align-items:end;"
+                                ),
+                            ),
+                            # Row 3: status line
+                            ui.output_ui("browse_status"),
+                            # Row 4: download button
+                            ui.download_button(
+                                "download_browse_report",
+                                "Download Custom Report",
+                                class_="btn btn-primary",
+                                style="width:100%;font-weight:700;",
+                            ),
+                            style=(
+                                "display:grid;gap:14px;width:100%;"
+                                "background:#ffffff;padding:20px 24px;"
+                                "border:1px solid #d6d6d6;border-radius:10px;"
+                                "box-sizing:border-box;"
+                            ),
+                        ),
+                        # Preview section (only renders once a file + player
+                        # are selected) — shows the same charts and summary
+                        # that will end up in the PDF.
+                        ui.output_ui("browse_preview"),
+                        class_="panel",
+                    ),
+                ),
+                id="active_main_tab",
             ),
             class_="tabs-wrap",
         )
@@ -7612,6 +7723,67 @@ def server(input, output, session):
             d = _d.today()
         return d.isoformat()
 
+    @output
+    @render.ui
+    def tab_specific_css():
+        # Hide the sidebar filters on the Custom Report tab — they don't
+        # affect the uploaded CSV, so showing them is just confusing.
+        try:
+            active = input.active_main_tab()
+        except Exception:
+            active = None
+        if active == "Custom Report":
+            return ui.tags.style(
+                ".sidebar { display: none !important; }"
+                ".main-area { padding-left: 24px !important; }"
+            )
+        return ui.tags.style("")
+
+    @output
+    @render.ui
+    def sidebar_download_btn():
+        # Only show the sidebar PDF button on the Home tab. Hide on
+        # Comparison, Prediction, and Report.
+        active = None
+        try:
+            active = input.active_main_tab()
+        except Exception:
+            active = None
+        if active and str(active).strip() != "Home":
+            return ui.div()
+        download_icon = ui.HTML(
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            'width="15" height="15" fill="currentColor" viewBox="0 0 16 16" '
+            'style="vertical-align:-2px;margin-right:7px;">'
+            '<path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 '
+            '1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5'
+            'a.5.5 0 0 1 .5-.5z"/>'
+            '<path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708'
+            '-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 '
+            '1 0-.708.708l3 3z"/>'
+            '</svg>'
+        )
+        return ui.tags.div(
+            ui.download_button(
+                "download_report",
+                ui.TagList(download_icon, "Download Player Profile"),
+                class_="btn",
+                style=(
+                    "width:100%;"
+                    "background:#DDB945;"
+                    "border:1.5px solid #333;"
+                    "color:#111;"
+                    "font-weight:500;"
+                    "font-size:15px;"
+                    "padding:12px 16px;"
+                    "border-radius:10px;"
+                    "letter-spacing:0.2px;"
+                    "text-align:center;"
+                ),
+            ),
+            style="margin-top:14px;",
+        )
+
     def _report_filename() -> str:
         ptype = input.player_type()
         if ptype == "pitcher":
@@ -7695,12 +7867,20 @@ def server(input, output, session):
             else:
                 m = pd.DataFrame()
 
+            # Count only tagged pitches so the header matches the charts.
+            if PITCH_TYPE_COL in data.columns:
+                tagged_pitch_count = int(
+                    is_valid_pitch_type(data[PITCH_TYPE_COL]).sum()
+                )
+            else:
+                tagged_pitch_count = len(data)
+
             pdf_bytes = pdf_report.build_pitcher_pdf(
                 pitcher_df=data,
                 usage_df=usage,
                 summary_df=m,
                 name=name, hand=hand, side_label=side_label,
-                pitch_count=len(data),
+                pitch_count=tagged_pitch_count,
                 data_through=input.date_end(),
             )
             yield pdf_bytes
@@ -7827,6 +8007,1007 @@ def server(input, output, session):
                 data_through=input.date_end(),
             )
             yield pdf_bytes
+
+    # ----------------------------------------------------------------------
+    # Browse tab: upload a CSV and download a pitcher/batter report
+    # ----------------------------------------------------------------------
+    @reactive.calc
+    def browse_validation_error():
+        """Returns a user-facing error string if the uploaded file does not
+        look like a TrackMan export; returns None when no file is uploaded
+        yet or the file passes basic schema checks."""
+        f = input.browse_file()
+        if f is None or len(f) == 0:
+            return None  # nothing uploaded yet — not an error state
+        path = f[0]["datapath"]
+        try:
+            # Just read the header to check schema.
+            header = pd.read_csv(path, nrows=0)
+        except Exception as e:
+            return f"Could not read the CSV: {e}"
+        cols = set(header.columns)
+        # Core columns needed for anything to work.
+        core_required = {
+            "Pitcher", "PitcherId", "Batter", "BatterId",
+            "TaggedPitchType", "PitchCall",
+        }
+        missing_core = core_required - cols
+        if len(missing_core) >= 5:
+            return (
+                "This file doesn't look like a TrackMan export — "
+                "required columns not found."
+            )
+        if missing_core:
+            return (
+                "This file is missing key TrackMan columns: "
+                + ", ".join(sorted(missing_core))
+                + "."
+            )
+        return None
+
+    @reactive.calc
+    def browse_raw_df():
+        f = input.browse_file()
+        if f is None or len(f) == 0:
+            return None
+        path = f[0]["datapath"]
+        try:
+            raw = pd.read_csv(path)
+        except Exception:
+            return None
+
+        cols = [c for c in COLUMNS_TO_KEEP if c in raw.columns]
+        if not cols:
+            return None
+        df = raw[cols].copy()
+
+        # Normalize text columns
+        for c in ("Pitcher", "Batter", PITCH_TYPE_COL, "PitchCall",
+                  "PitcherTeam", "BatterTeam", "PitcherThrows", "BatterSide"):
+            if c in df.columns:
+                df[c] = df[c].astype(str).str.strip().replace({"nan": np.nan})
+
+        # Normalize ID columns to string
+        for c in ("PitcherId", "BatterId"):
+            if c in df.columns:
+                s = df[c].astype(str).str.strip()
+                df[c] = s.replace({"nan": "", "NaN": ""})
+
+        # Parse Date (best-effort) so it can be used for data_through
+        if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        return df
+
+    @reactive.effect
+    def _update_browse_hand_label():
+        # Rename the handedness-filter dropdown label based on the current
+        # player type so it isn't ambiguous:
+        #   Pitcher selected → filter is about the batter facing him
+        #   Batter  selected → filter is about the pitcher throwing to her
+        ptype = input.browse_player_type()
+        if ptype == "pitcher":
+            new_label = "vs Batter Hand"
+            choices = {
+                "all":   "Combined View",
+                "right": "vs RHB",
+                "left":  "vs LHB",
+            }
+        else:
+            new_label = "vs Pitcher Hand"
+            choices = {
+                "all":   "Combined View",
+                "right": "vs RHP",
+                "left":  "vs LHP",
+            }
+        ui.update_select(
+            "browse_hand_filter",
+            label=new_label,
+            choices=choices,
+            selected=input.browse_hand_filter() or "all",
+            session=session,
+        )
+
+    @reactive.effect
+    def _update_browse_player_choices():
+        df = browse_raw_df()
+        ptype = input.browse_player_type()
+        if df is None or df.empty:
+            ui.update_select(
+                "browse_player",
+                choices={"": "— upload a CSV —"},
+                session=session,
+            )
+            return
+
+        id_col = "PitcherId" if ptype == "pitcher" else "BatterId"
+        name_col = "Pitcher" if ptype == "pitcher" else "Batter"
+        if id_col not in df.columns or name_col not in df.columns:
+            ui.update_select(
+                "browse_player",
+                choices={"": "— no pitcher/batter columns —"},
+                session=session,
+            )
+            return
+
+        lookup = df[[id_col, name_col]].copy()
+        lookup[id_col] = lookup[id_col].astype(str).str.strip()
+        lookup = lookup[
+            lookup[id_col].str.len().gt(0)
+            & lookup[id_col].str.lower().ne("nan")
+        ]
+        lookup = lookup.drop_duplicates().sort_values([name_col, id_col])
+
+        choices = {}
+        for row in lookup.itertuples(index=False):
+            rid = str(getattr(row, id_col))
+            rname = getattr(row, name_col)
+            choices[rid] = format_display_name(rname) or rid
+        if not choices:
+            ui.update_select(
+                "browse_player",
+                choices={"": "— no players found —"},
+                session=session,
+            )
+            return
+
+        ui.update_select(
+            "browse_player",
+            choices=choices,
+            selected=next(iter(choices)),
+            session=session,
+        )
+
+    def _browse_opponent_name(data, ptype):
+        """Infer the opposing team from filtered data. Returns a friendly
+        name via TEAM_NAME_MAP when possible, otherwise the raw code."""
+        if data is None or data.empty:
+            return None
+        col = "BatterTeam" if ptype == "pitcher" else "PitcherTeam"
+        if col not in data.columns:
+            return None
+        codes = (
+            data[col].astype(str).str.strip()
+            .replace({"nan": "", "NaN": ""})
+        )
+        codes = codes[codes != ""]
+        if codes.empty:
+            return None
+        # Prefer the most common opposing team
+        top_code = codes.mode().iloc[0] if not codes.mode().empty else codes.iloc[0]
+        try:
+            return TEAM_NAME_MAP.get(top_code, top_code)
+        except Exception:
+            return top_code
+
+    def browse_filtered_data():
+        """Return (data, player_type) filtered for the selected player and hand."""
+        df = browse_raw_df()
+        pid = input.browse_player()
+        ptype = input.browse_player_type()
+        if df is None or df.empty or not pid:
+            return None, ptype
+
+        if ptype == "pitcher":
+            if "PitcherId" not in df.columns:
+                return None, ptype
+            d = df[df["PitcherId"].astype(str) == str(pid)].copy()
+            # Filter by batter handedness (vs RHB / vs LHB)
+            hf = input.browse_hand_filter()
+            if hf != "all" and "BatterSide" in d.columns:
+                side_series = d["BatterSide"].astype(str).str.strip().str.lower()
+                if hf == "right":
+                    d = d[side_series.isin(["right", "r"])]
+                elif hf == "left":
+                    d = d[side_series.isin(["left", "l"])]
+            return d, ptype
+        else:
+            if "BatterId" not in df.columns:
+                return None, ptype
+            d = df[df["BatterId"].astype(str) == str(pid)].copy()
+            # Filter by pitcher handedness (vs RHP / vs LHP)
+            hf = input.browse_hand_filter()
+            if hf != "all" and "PitcherThrows" in d.columns:
+                throws_series = d["PitcherThrows"].astype(str).str.strip().str.lower()
+                if hf == "right":
+                    d = d[throws_series.isin(["right", "r"])]
+                elif hf == "left":
+                    d = d[throws_series.isin(["left", "l"])]
+            return d, ptype
+
+    @output
+    @render.ui
+    def browse_status():
+        # Schema-level error (e.g. non-TrackMan CSV) takes priority
+        err = browse_validation_error()
+        if err:
+            return ui.div(
+                ui.tags.span("⚠ ", style="margin-right:4px;"),
+                err,
+                style=(
+                    "color:#a33;padding:10px 12px;font-size:13px;"
+                    "font-weight:600;background:#fef1f0;"
+                    "border:1px solid #f5c6c6;border-radius:6px;"
+                ),
+            )
+        df = browse_raw_df()
+        if df is None:
+            return ui.div(
+                "Upload a CSV in TrackMan format to begin — "
+                "you can drag & drop onto the upload bar or click Browse.",
+                style="color:#666;padding:10px 4px;font-size:13px;",
+            )
+        pid = input.browse_player()
+        if not pid:
+            return ui.div(
+                f"Loaded {len(df):,} rows. Select a player to enable the download.",
+                style="color:#444;padding:10px 4px;font-size:13px;",
+            )
+        d, ptype = browse_filtered_data()
+        total_rows = 0 if d is None else len(d)
+        if total_rows == 0:
+            return ui.div(
+                "No rows for that player with the current handedness filter.",
+                style="color:#a33;padding:10px 4px;font-size:13px;",
+            )
+        # For pitchers, show the tagged-pitch count (what charts actually use).
+        if ptype == "pitcher" and d is not None and PITCH_TYPE_COL in d.columns:
+            tagged = int(is_valid_pitch_type(d[PITCH_TYPE_COL]).sum())
+            untagged = total_rows - tagged
+            if tagged == 0:
+                return ui.div(
+                    f"{total_rows:,} pitches found, but all are untagged "
+                    "(Other/Undefined). The PDF will be mostly empty.",
+                    style="color:#a33;padding:10px 4px;font-size:13px;",
+                )
+            extra = f" ({untagged:,} untagged will be excluded)" if untagged else ""
+            return ui.div(
+                f"Ready: {tagged:,} tagged pitches for the selected player"
+                f"{extra}. Click Download Custom Report.",
+                style=(
+                    "color:#185FA5;padding:10px 4px;font-size:13px;"
+                    "font-weight:600;"
+                ),
+            )
+        return ui.div(
+            f"Ready: {total_rows:,} pitches for the selected player. "
+            "Click Download Custom Report.",
+            style=(
+                "color:#185FA5;padding:10px 4px;font-size:13px;"
+                "font-weight:600;"
+            ),
+        )
+
+    # ----------------------------------------------------------------------
+    # Custom Report preview — shown after a file + player are selected,
+    # mirrors what the PDF will contain so the user can verify before
+    # downloading.
+    # ----------------------------------------------------------------------
+    @output
+    @render.ui
+    def browse_preview():
+        data, ptype = browse_filtered_data()
+        if data is None or data.empty:
+            return ui.div()
+
+        # Compute the game date (max Date in the filtered data) once.
+        game_date_str = ""
+        if "Date" in data.columns:
+            dates = pd.to_datetime(data["Date"], errors="coerce").dropna()
+            if not dates.empty:
+                game_date_str = dates.max().strftime("%b %d, %Y")
+
+        # Player summary line
+        if ptype == "pitcher":
+            name = format_display_name(
+                data["Pitcher"].iloc[0] if "Pitcher" in data.columns else ""
+            ) or "Pitcher"
+            hand = throws_to_short(
+                data["PitcherThrows"].iloc[0] if "PitcherThrows" in data.columns else ""
+            )
+            tagged = int(is_valid_pitch_type(data[PITCH_TYPE_COL]).sum()) \
+                if PITCH_TYPE_COL in data.columns else len(data)
+            hand_str = f" | {hand}" if hand else ""
+            date_str = f" | {game_date_str}" if game_date_str else ""
+            opponent = _browse_opponent_name(data, "pitcher")
+            opp_str = f" | vs {opponent}" if opponent else ""
+            summary_line = (
+                f"{name}{hand_str}{date_str} | {tagged} pitches{opp_str}"
+            )
+
+            return ui.div(
+                ui.div("Report Preview", class_="profile-title",
+                       style="margin-top:18px;"),
+                ui.div(summary_line, class_="player-summary"),
+                ui.output_ui("cr_legend"),
+                ui.row(
+                    ui.column(4, ui.div(
+                        ui.div("Pitch Usage",
+                               style="font-weight:700;font-size:13px;"
+                                     "color:#444;margin-bottom:4px;"),
+                        ui.output_plot("cr_pie", height="300px"),
+                        class_="card",
+                    )),
+                    ui.column(4, ui.div(
+                        ui.div("Pitch Locations",
+                               style="font-weight:700;font-size:13px;"
+                                     "color:#444;margin-bottom:4px;"),
+                        ui.output_plot("cr_location", height="300px"),
+                        class_="card",
+                    )),
+                    ui.column(4, ui.div(
+                        ui.div("Pitch Movements",
+                               style="font-weight:700;font-size:13px;"
+                                     "color:#444;margin-bottom:4px;"),
+                        ui.output_plot("cr_movement", height="300px"),
+                        class_="card",
+                    )),
+                ),
+                ui.div(
+                    ui.div("Summary Table",
+                           style="font-weight:700;font-size:14px;"
+                                 "color:#222;margin:14px 0 6px 2px;"),
+                    ui.div(ui.output_table("cr_summary_table"),
+                           class_="usage-table-wrap"),
+                    class_="card",
+                    style="margin-top:14px;",
+                ),
+                class_="cr-preview",
+                style="margin-top:18px;",
+            )
+        else:
+            # Batter preview: show batting stat line + pitch breakdown table
+            bid = input.browse_player()
+            name = format_display_name(
+                data["Batter"].iloc[0] if "Batter" in data.columns else ""
+            ) or "Batter"
+            bat_side = str(data["BatterSide"].iloc[0]).strip() \
+                if "BatterSide" in data.columns else ""
+            if bat_side.lower() in ("nan", ""):
+                bat_side = ""
+            stats = compute_batter_stats(data, bid)
+            pa = stats.get("PA", 0)
+            side_txt = f" | Bats: {bat_side}" if bat_side else ""
+            date_str = f" | {game_date_str}" if game_date_str else ""
+            opponent = _browse_opponent_name(data, "batter")
+            opp_str = f" | vs {opponent}" if opponent else ""
+            summary_line = (
+                f"{name}{side_txt}{date_str} | {pa} PA{opp_str}"
+            )
+
+            return ui.div(
+                ui.div("Report Preview", class_="profile-title",
+                       style="margin-top:18px;"),
+                ui.div(summary_line, class_="player-summary"),
+                ui.div(
+                    ui.div("Batting Summary",
+                           style="font-weight:700;font-size:14px;"
+                                 "color:#222;margin:14px 0 6px 2px;"),
+                    ui.div(ui.output_table("cr_batting_summary"),
+                           class_="usage-table-wrap"),
+                    class_="card",
+                ),
+                ui.div(
+                    ui.div("By Pitch Type",
+                           style="font-weight:700;font-size:14px;"
+                                 "color:#222;margin:14px 0 6px 2px;"),
+                    ui.div(ui.output_table("cr_batter_pitch_table"),
+                           class_="usage-table-wrap"),
+                    class_="card",
+                    style="margin-top:14px;",
+                ),
+                class_="cr-preview",
+                style="margin-top:18px;",
+            )
+
+    # ---- Pitcher preview: legend + 3 plots + summary table ---------------
+    def _cr_pitch_colors():
+        data, _ = browse_filtered_data()
+        if data is None or data.empty or PITCH_TYPE_COL not in data.columns:
+            return {}
+        pts = data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL]), PITCH_TYPE_COL] \
+            .astype(str).str.strip().unique().tolist()
+        return build_pitch_color_map(pts)
+
+    def _cr_pitch_order():
+        data, _ = browse_filtered_data()
+        if data is None or data.empty or PITCH_TYPE_COL not in data.columns:
+            return []
+        return (
+            data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL]), PITCH_TYPE_COL]
+            .astype(str).str.strip().value_counts().index.tolist()
+        )
+
+    @output
+    @render.ui
+    def cr_legend():
+        order = _cr_pitch_order()
+        if not order:
+            return ui.div()
+        colors = _cr_pitch_colors()
+        items = []
+        for pt in order:
+            color = colors.get(pt, "#777777")
+            items.append(
+                ui.div(
+                    ui.span(style=f"display:inline-block;width:11px;height:11px;"
+                                  f"border-radius:50%;background:{color};"),
+                    ui.span(pt, style="font-size:13px;color:#333;"),
+                    style="display:flex;align-items:center;gap:6px;",
+                )
+            )
+        return ui.div(*items, class_="legend-row")
+
+    @output
+    @render.plot
+    def cr_pie():
+        data, ptype = browse_filtered_data()
+        fig, ax = plt.subplots(figsize=(4.0, 3.2))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+        if (data is None or data.empty or ptype != "pitcher"
+                or PITCH_TYPE_COL not in data.columns):
+            ax.text(0.5, 0.5, "No pitch usage data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#555")
+            ax.set_axis_off()
+            plt.close(fig)
+            return fig
+        d = data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL])]
+        if d.empty:
+            ax.text(0.5, 0.5, "No tagged pitches",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#555")
+            ax.set_axis_off()
+            plt.close(fig)
+            return fig
+        counts = d[PITCH_TYPE_COL].astype(str).str.strip().value_counts()
+        colors = _cr_pitch_colors()
+        wedge_colors = [colors.get(pt, "#888") for pt in counts.index]
+        ax.pie(
+            counts.values, labels=None, colors=wedge_colors,
+            startangle=90, counterclock=False,
+            autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
+            pctdistance=0.65,
+            textprops={"fontsize": 9, "fontweight": "bold"},
+        )
+        plt.close(fig)
+        return fig
+
+    @output
+    @render.plot
+    def cr_location():
+        data, ptype = browse_filtered_data()
+        fig, ax = plt.subplots(figsize=(4.0, 3.2))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+        if data is None or data.empty or ptype != "pitcher":
+            ax.text(0.5, 0.5, "No pitch location data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#555")
+            ax.set_axis_off()
+            plt.close(fig)
+            return fig
+        d = data.copy()
+        d["PlateLocSide"] = pd.to_numeric(d["PlateLocSide"], errors="coerce")
+        d["PlateLocHeight"] = pd.to_numeric(d["PlateLocHeight"], errors="coerce")
+        d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
+        if PITCH_TYPE_COL in d.columns:
+            d = d[is_valid_pitch_type(d[PITCH_TYPE_COL])]
+        if d.empty:
+            ax.text(0.5, 0.5, "No pitch location data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#555")
+            ax.set_axis_off()
+            plt.close(fig)
+            return fig
+        ax.add_patch(Rectangle(
+            (ZONE_LEFT - 0.3, ZONE_BOTTOM - 0.3),
+            (ZONE_RIGHT - ZONE_LEFT) + 0.6, (ZONE_TOP - ZONE_BOTTOM) + 0.6,
+            facecolor="#d9d9d9", edgecolor="none", alpha=0.25,
+        ))
+        ax.add_patch(Rectangle(
+            (ZONE_LEFT, ZONE_BOTTOM), ZONE_RIGHT - ZONE_LEFT,
+            ZONE_TOP - ZONE_BOTTOM, fill=False, linewidth=2,
+        ))
+        ax.plot([ZONE_LEFT, ZONE_RIGHT],
+                [(ZONE_BOTTOM + ZONE_TOP) / 2] * 2,
+                linestyle="--", linewidth=1, color="#1f77b4")
+        ax.plot([0, 0], [ZONE_BOTTOM, ZONE_TOP],
+                linestyle="--", linewidth=1, color="#ff7f0e")
+        colors = _cr_pitch_colors()
+        for pt, g in d.groupby(PITCH_TYPE_COL):
+            ax.scatter(
+                g["PlateLocSide"], g["PlateLocHeight"],
+                s=18, alpha=0.80,
+                color=colors.get(pt, "#888"),
+            )
+        ax.add_patch(home_plate_polygon(y_front=0.10))
+        ax.set_xlim(-3, 3)
+        ax.set_ylim(-0.5, 5)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("PlateLocSide", fontsize=8)
+        ax.set_ylabel("PlateLocHeight", fontsize=8)
+        ax.tick_params(axis="both", labelsize=7)
+        ax.grid(True, alpha=0.2)
+        plt.close(fig)
+        return fig
+
+    @output
+    @render.plot
+    def cr_movement():
+        data, ptype = browse_filtered_data()
+        fig, ax = plt.subplots(figsize=(4.0, 3.2))
+        fig.patch.set_facecolor("#f7f7f7")
+        ax.set_facecolor("#f7f7f7")
+        if data is None or data.empty or ptype != "pitcher":
+            ax.text(0.5, 0.5, "No pitch movement data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#555")
+            ax.set_axis_off()
+            plt.close(fig)
+            return fig
+        d = data.copy()
+        d[X_MOV] = pd.to_numeric(d.get(X_MOV), errors="coerce")
+        d[Y_MOV] = pd.to_numeric(d.get(Y_MOV), errors="coerce")
+        d = d.dropna(subset=[X_MOV, Y_MOV])
+        if PITCH_TYPE_COL in d.columns:
+            d = d[is_valid_pitch_type(d[PITCH_TYPE_COL])]
+        if d.empty:
+            ax.text(0.5, 0.5, "No pitch movement data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#555")
+            ax.set_axis_off()
+            plt.close(fig)
+            return fig
+        colors = _cr_pitch_colors()
+        for pt, g in d.groupby(PITCH_TYPE_COL):
+            ax.scatter(
+                g[X_MOV], g[Y_MOV], s=16, alpha=0.80,
+                color=colors.get(pt, "#888"),
+            )
+        ax.axhline(0, linewidth=1, color="#777")
+        ax.axvline(0, linewidth=1, color="#777")
+        ax.set_xlim(*MOV_XLIM)
+        ax.set_ylim(*MOV_YLIM)
+        ax.set_xlabel("Horizontal break (in)", fontsize=8)
+        ax.set_ylabel("Induced vertical break (in)", fontsize=8)
+        ax.tick_params(axis="both", labelsize=7)
+        ax.grid(True, alpha=0.25)
+        plt.close(fig)
+        return fig
+
+    @output
+    @render.table
+    def cr_summary_table():
+        data, ptype = browse_filtered_data()
+        if data is None or data.empty or ptype != "pitcher":
+            return pd.DataFrame()
+        pid = input.browse_player()
+        metrics = compute_pitch_metrics(data, pid)
+        if metrics is None or metrics.empty:
+            return pd.DataFrame()
+        m = metrics.copy()
+        for c in ("max_velo", "avg_velo"):
+            m[c] = pd.to_numeric(m.get(c), errors="coerce").round(1)
+        m["spin_rate"] = pd.to_numeric(
+            m.get("spin_rate"), errors="coerce"
+        ).round(0)
+        for c in ("ivb_avg", "hb_avg"):
+            if c in m.columns:
+                m[c] = m[c].map(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+        pct_cols = [
+            "usage_pct", "strike_pct", "called_strike_pct",
+            "swing_pct", "swstr_pct", "whiff_pct",
+            "zone_swing_pct", "zone_contact_pct",
+            "chase_pct", "chase_contact_pct",
+        ]
+        for c in pct_cols:
+            if c in m.columns:
+                m[c] = (
+                    pd.to_numeric(m[c], errors="coerce") * 100
+                ).round(1).astype(str) + "%"
+        m = m.rename(columns={
+            PITCH_TYPE_COL: "Pitch type",
+            "pitch_count":   "Count",
+            "usage_pct":     "Usage %",
+            "max_velo":      "Max Velo", "avg_velo": "Avg Velo",
+            "spin_rate":     "Spin Rate",
+            "ivb_avg":       "Avg IVB", "hb_avg": "Avg HB",
+            "strike_pct":    "Strike %",
+            "called_strike_pct": "Called Strike %",
+            "swing_pct":     "Swing %",
+            "swstr_pct":     "SwStrike %",
+            "whiff_pct":     "Whiff %",
+            "zone_swing_pct":    "Zone Swing %",
+            "zone_contact_pct":  "Zone Contact %",
+            "chase_pct":     "Chase %",
+            "chase_contact_pct": "Chase Contact %",
+        })
+        cols_keep = [c for c in (
+            "Pitch type", "Count", "Usage %", "Max Velo", "Avg Velo",
+            "Spin Rate", "Avg IVB", "Avg HB", "Strike %", "Called Strike %",
+            "Swing %", "SwStrike %", "Whiff %", "Zone Swing %",
+            "Zone Contact %", "Chase %", "Chase Contact %"
+        ) if c in m.columns]
+        return m[cols_keep]
+
+    # ---- Batter preview: batting stats + pitch breakdown -----------------
+    @output
+    @render.table
+    def cr_batting_summary():
+        data, ptype = browse_filtered_data()
+        if data is None or data.empty or ptype != "batter":
+            return pd.DataFrame()
+        bid = input.browse_player()
+        stats = compute_batter_stats(data, bid)
+
+        def _ba(v):
+            if v is None:
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v * 1000)):03d}"
+
+        row = {
+            "PA":   stats["PA"],  "AB": stats["AB"], "H":  stats["H"],
+            "2B":   stats["doubles"], "3B": stats["triples"],
+            "HR":   stats["HR"],  "BB": stats["BB"], "K":  stats["K"],
+            "HBP":  stats["HBP"], "BA":  _ba(stats["BA"]),
+            "OBP":  _ba(stats["OBP"]),  "SLG": _ba(stats["SLG"]),
+            "OPS":  _ba(stats["OPS"]),  "wOBA": _ba(stats["wOBA"]),
+        }
+        return pd.DataFrame([row])
+
+    @output
+    @render.table
+    def cr_batter_pitch_table():
+        data, ptype = browse_filtered_data()
+        if data is None or data.empty or ptype != "batter":
+            return pd.DataFrame()
+        SWING_EVENTS = {"StrikeSwinging", "FoulBallFieldable",
+                        "FoulBallNotFieldable", "InPlay"}
+        CONTACT_EVENTS = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+        def _pct(n, d):
+            return f"{n / d * 100:.1f}%" if d > 0 else "—"
+
+        def _ba(v):
+            if v is None or pd.isna(v):
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v * 1000)):03d}"
+
+        rows = []
+        if PITCH_TYPE_COL in data.columns:
+            order = (
+                data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL]), PITCH_TYPE_COL]
+                .astype(str).value_counts().index.tolist()
+            )
+            for pt in order:
+                ptd = data[data[PITCH_TYPE_COL].astype(str).str.strip() == pt]
+                n = len(ptd)
+                if n == 0:
+                    continue
+                avg_velo = ptd["RelSpeed"].dropna().mean() \
+                    if "RelSpeed" in ptd.columns else None
+                calls = ptd["PitchCall"].astype(str).str.strip() \
+                    if "PitchCall" in ptd.columns else pd.Series(dtype=str)
+                n_swing   = int(calls.isin(SWING_EVENTS).sum())
+                n_whiff   = int((calls == "StrikeSwinging").sum())
+                n_contact = int(calls.isin(CONTACT_EVENTS).sum())
+                loc_h = pd.to_numeric(ptd.get("PlateLocHeight"), errors="coerce")
+                loc_s = pd.to_numeric(ptd.get("PlateLocSide"),   errors="coerce")
+                in_zone = (loc_h >= ZONE_BOTTOM) & (loc_h <= ZONE_TOP) \
+                          & (loc_s >= ZONE_LEFT) & (loc_s <= ZONE_RIGHT)
+                out_zone = ~in_zone & loc_h.notna() & loc_s.notna()
+                n_out   = int(out_zone.sum())
+                n_chase = int((out_zone & calls.isin(SWING_EVENTS)).sum())
+                results = ptd["PlayResult"].astype(str).str.strip() \
+                    if "PlayResult" in ptd.columns else pd.Series(dtype=str)
+                singles = int((results == "Single").sum())
+                doubles = int((results == "Double").sum())
+                triples = int((results == "Triple").sum())
+                hr_cnt  = int((results == "HomeRun").sum())
+                k_cnt   = int((results == "Strikeout").sum())
+                hits    = singles + doubles + triples + hr_cnt
+                ab_approx = (
+                    hits
+                    + int((results == "Out").sum())
+                    + int((results == "FieldersChoice").sum())
+                    + int((results == "Error").sum())
+                    + k_cnt
+                )
+                tb = singles + 2 * doubles + 3 * triples + 4 * hr_cnt
+                ba_val  = (hits / ab_approx) if ab_approx > 0 else None
+                slg_val = (tb   / ab_approx) if ab_approx > 0 else None
+                rows.append({
+                    "Pitch": pt,
+                    "Pitches Seen": n,
+                    "Avg Velo": f"{avg_velo:.1f}"
+                        if avg_velo and not pd.isna(avg_velo) else "—",
+                    "Swing %":   _pct(n_swing, n),
+                    "Whiff %":   _pct(n_whiff, n_swing),
+                    "Chase %":   _pct(n_chase, n_out),
+                    "Contact %": _pct(n_contact, n_swing),
+                    "1B": singles, "2B": doubles, "3B": triples,
+                    "HR": hr_cnt, "K": k_cnt,
+                    "BA":  _ba(ba_val),
+                    "SLG": _ba(slg_val),
+                })
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    def _browse_report_filename():
+        ptype = input.browse_player_type()
+        df = browse_raw_df()
+        pid = input.browse_player()
+
+        # --- name (First_Last from the CSV itself) ---
+        name_raw = ""
+        if df is not None and pid:
+            name_col = "Pitcher" if ptype == "pitcher" else "Batter"
+            id_col = "PitcherId" if ptype == "pitcher" else "BatterId"
+            if name_col in df.columns and id_col in df.columns:
+                match = df[df[id_col].astype(str) == str(pid)]
+                if not match.empty:
+                    name_raw = str(match[name_col].iloc[0] or "").strip()
+
+        if "," in name_raw:
+            last, first = name_raw.split(",", 1)
+            first, last = first.strip(), last.strip()
+        else:
+            parts = name_raw.split()
+            if len(parts) >= 2:
+                first, last = parts[0], " ".join(parts[1:])
+            else:
+                first, last = name_raw, ""
+        first_clean = _safe_clean_filename_part(first) or "Player"
+        last_clean  = _safe_clean_filename_part(last)  or "Unknown"
+
+        # --- date (max date from the uploaded CSV itself) ---
+        date_str = "unknown_date"
+        if df is not None and "Date" in df.columns:
+            dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
+            if not dates.empty:
+                date_str = dates.max().date().isoformat()
+
+        kind = "Pitcher" if ptype == "pitcher" else "Batter"
+        return f"{kind}_{first_clean}_{last_clean}_{date_str}.pdf"
+
+    def _browse_data_through(data):
+        if data is None or data.empty or "Date" not in data.columns:
+            return None
+        dates = pd.to_datetime(data["Date"], errors="coerce").dropna()
+        if dates.empty:
+            return None
+        return dates.max().date()
+
+    @render.download(filename=_browse_report_filename)
+    def download_browse_report():
+        data, ptype = browse_filtered_data()
+        if data is None or data.empty:
+            yield b""
+            return
+
+        # Uploaded CSV is a single game, so this is the game date (not a range).
+        game_date = _browse_data_through(data)
+
+        if ptype == "pitcher":
+            pid = input.browse_player()
+            name = format_display_name(
+                data["Pitcher"].iloc[0] if "Pitcher" in data.columns else ""
+            ) or "Pitcher"
+            hand = throws_to_short(
+                data["PitcherThrows"].iloc[0]
+                if "PitcherThrows" in data.columns else ""
+            )
+            side_label = {
+                "all":   "Combined View",
+                "right": "vs RHB",
+                "left":  "vs LHB",
+            }.get(input.browse_hand_filter(), "Combined View")
+
+            usage = compute_usage(data, pid)
+            metrics = compute_pitch_metrics(data, pid)
+
+            if metrics is not None and not metrics.empty:
+                m = metrics.copy()
+                for c in ("max_velo", "avg_velo"):
+                    m[c] = pd.to_numeric(m.get(c), errors="coerce").round(1)
+                m["spin_rate"] = pd.to_numeric(
+                    m.get("spin_rate"), errors="coerce"
+                ).round(0)
+                for c in ("ivb_avg", "hb_avg"):
+                    if c in m.columns:
+                        m[c] = m[c].map(
+                            lambda x: f"{x:.1f}" if pd.notnull(x) else ""
+                        )
+                pct_cols = [
+                    "usage_pct", "strike_pct", "called_strike_pct",
+                    "swing_pct", "swstr_pct", "whiff_pct",
+                    "zone_swing_pct", "zone_contact_pct",
+                    "chase_pct", "chase_contact_pct",
+                ]
+                for c in pct_cols:
+                    if c in m.columns:
+                        m[c] = (
+                            pd.to_numeric(m[c], errors="coerce") * 100
+                        ).round(1).astype(str) + "%"
+                m = m.rename(columns={
+                    PITCH_TYPE_COL: "Pitch",
+                    "pitch_count": "Count",
+                    "usage_pct":   "Usage %",
+                    "max_velo":    "Max Velo", "avg_velo": "Avg Velo",
+                    "spin_rate":   "Spin Rate",
+                    "ivb_avg":     "IVB Avg",  "hb_avg":   "HB Avg",
+                    "strike_pct":  "Strike %",
+                    "swing_pct":   "Swing %",
+                    "whiff_pct":   "Whiff %",
+                    "zone_swing_pct":   "Zone\nSwing %",
+                    "zone_contact_pct": "Zone\nContact %",
+                    "chase_pct":   "Chase %",
+                })
+                cols_keep = [
+                    "Pitch", "Count", "Usage %", "Max Velo", "Avg Velo",
+                    "Spin Rate", "IVB Avg", "HB Avg",
+                    "Strike %", "Swing %", "Whiff %",
+                    "Zone\nSwing %", "Zone\nContact %", "Chase %",
+                ]
+                cols_keep = [c for c in cols_keep if c in m.columns]
+                m = m[cols_keep]
+            else:
+                m = pd.DataFrame()
+
+            # Count only tagged pitches so the header matches the charts.
+            if PITCH_TYPE_COL in data.columns:
+                tagged_pitch_count = int(
+                    is_valid_pitch_type(data[PITCH_TYPE_COL]).sum()
+                )
+            else:
+                tagged_pitch_count = len(data)
+
+            opponent = _browse_opponent_name(data, "pitcher")
+            pdf_bytes = pdf_report.build_pitcher_pdf(
+                pitcher_df=data,
+                usage_df=usage,
+                summary_df=m,
+                name=name, hand=hand, side_label=side_label,
+                pitch_count=tagged_pitch_count,
+                # The uploaded CSV is a single game — show the game date
+                # and opponent instead of a "through X" date range.
+                data_through=None,
+                opponent=opponent,
+                game_date=game_date,
+            )
+            yield pdf_bytes
+            return
+
+        # ---- Batter branch ----
+        bid = input.browse_player()
+        name = format_display_name(
+            data["Batter"].iloc[0] if "Batter" in data.columns else ""
+        ) or "Batter"
+        side = str(data["BatterSide"].iloc[0]).strip() \
+               if "BatterSide" in data.columns else ""
+        if side.lower() in ("nan", ""):
+            side = ""
+        hand_label = {
+            "all":   "Combined View",
+            "right": "vs RHP",
+            "left":  "vs LHP",
+        }.get(input.browse_hand_filter(), "Combined View")
+
+        stats = compute_batter_stats(data, bid)
+
+        def _fmt_ba_local(v):
+            if v is None:
+                return "—"
+            if v >= 1.0:
+                return f"{v:.3f}"
+            return f".{int(round(v * 1000)):03d}"
+
+        batting_row = {
+            "PA": stats["PA"], "AB": stats["AB"], "H": stats["H"],
+            "2B": stats["doubles"], "3B": stats["triples"], "HR": stats["HR"],
+            "BB": stats["BB"], "K": stats["K"], "HBP": stats["HBP"],
+            "BA":   _fmt_ba_local(stats["BA"]),
+            "OBP":  _fmt_ba_local(stats["OBP"]),
+            "SLG":  _fmt_ba_local(stats["SLG"]),
+            "OPS":  _fmt_ba_local(stats["OPS"]),
+            "wOBA": _fmt_ba_local(stats["wOBA"]),
+        }
+
+        # Per-pitch breakdown (mirrors the main download_report batter branch)
+        SWING_EVENTS = {"StrikeSwinging", "FoulBallFieldable",
+                        "FoulBallNotFieldable", "InPlay"}
+        CONTACT_EVENTS = {"FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+
+        def _pct_str(n, d):
+            return f"{n / d * 100:.1f}%" if d > 0 else "—"
+
+        rows = []
+        if PITCH_TYPE_COL in data.columns:
+            order = (
+                data.loc[is_valid_pitch_type(data[PITCH_TYPE_COL]), PITCH_TYPE_COL]
+                .astype(str).value_counts().index.tolist()
+            )
+            for pt in order:
+                ptd = data[data[PITCH_TYPE_COL].astype(str).str.strip() == pt]
+                n = len(ptd)
+                if n == 0:
+                    continue
+                avg_velo = ptd["RelSpeed"].dropna().mean() \
+                    if "RelSpeed" in ptd.columns else None
+                calls = ptd["PitchCall"].astype(str).str.strip() \
+                    if "PitchCall" in ptd.columns else pd.Series(dtype=str)
+                n_swing   = int(calls.isin(SWING_EVENTS).sum())
+                n_whiff   = int((calls == "StrikeSwinging").sum())
+                n_contact = int(calls.isin(CONTACT_EVENTS).sum())
+                loc_h = pd.to_numeric(ptd.get("PlateLocHeight"), errors="coerce")
+                loc_s = pd.to_numeric(ptd.get("PlateLocSide"),   errors="coerce")
+                in_zone  = (loc_h >= ZONE_BOTTOM) & (loc_h <= ZONE_TOP) \
+                           & (loc_s >= ZONE_LEFT) & (loc_s <= ZONE_RIGHT)
+                out_zone = ~in_zone & loc_h.notna() & loc_s.notna()
+                n_out    = int(out_zone.sum())
+                n_chase  = int((out_zone & calls.isin(SWING_EVENTS)).sum())
+
+                results = ptd["PlayResult"].astype(str).str.strip() \
+                    if "PlayResult" in ptd.columns else pd.Series(dtype=str)
+                singles = int((results == "Single").sum())
+                doubles = int((results == "Double").sum())
+                triples = int((results == "Triple").sum())
+                hr_cnt  = int((results == "HomeRun").sum())
+                k_cnt   = int((results == "Strikeout").sum())
+                hits    = singles + doubles + triples + hr_cnt
+                ab_approx = (
+                    hits
+                    + int((results == "Out").sum())
+                    + int((results == "FieldersChoice").sum())
+                    + int((results == "Error").sum())
+                    + k_cnt
+                )
+                tb = singles + 2 * doubles + 3 * triples + 4 * hr_cnt
+
+                def _ba_fmt(v):
+                    if v is None or pd.isna(v):
+                        return "—"
+                    if v >= 1.0:
+                        return f"{v:.3f}"
+                    return f".{int(round(v * 1000)):03d}"
+
+                ba_val  = (hits / ab_approx) if ab_approx > 0 else None
+                slg_val = (tb   / ab_approx) if ab_approx > 0 else None
+
+                rows.append({
+                    "Pitch": pt,
+                    "Pitches Seen": n,
+                    "Avg Velo": f"{avg_velo:.1f}"
+                        if avg_velo and not pd.isna(avg_velo) else "—",
+                    "Swing %":   _pct_str(n_swing, n),
+                    "Whiff %":   _pct_str(n_whiff, n_swing),
+                    "Chase %":   _pct_str(n_chase, n_out),
+                    "Contact %": _pct_str(n_contact, n_swing),
+                    "1B": singles, "2B": doubles, "3B": triples,
+                    "HR": hr_cnt, "K": k_cnt,
+                    "BA":  _ba_fmt(ba_val),
+                    "SLG": _ba_fmt(slg_val),
+                })
+        pitch_df = pd.DataFrame(rows) if rows else pd.DataFrame()
+
+        opponent = _browse_opponent_name(data, "batter")
+        pdf_bytes = pdf_report.build_batter_pdf(
+            batter_df=data,
+            batting_line_row=batting_row,
+            pitch_breakdown_df=pitch_df,
+            name=name, side=side, hand_label=hand_label,
+            pa=stats["PA"],
+            # Single-game CSV — show the game date and opponent instead
+            # of a "through X" date range.
+            data_through=None,
+            opponent=opponent,
+            game_date=game_date,
+        )
+        yield pdf_bytes
 
 
 app = App(app_ui, server, static_assets=STATIC_DIR)
