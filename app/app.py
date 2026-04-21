@@ -3009,7 +3009,7 @@ def server(input, output, session):
     @reactive.calc
     def batter_pitch_colors():
         data = batter_data()
-        if data is None or data.empty or PITCH_TYPE_COL not in data.columns:
+        if data is   None or data.empty or PITCH_TYPE_COL not in data.columns:
             return {}
         return build_pitch_color_map(data[PITCH_TYPE_COL].dropna().unique())
 

@@ -1,219 +1,216 @@
 # Prediction Tab Logic and ML Layer
 
-This document explains how the Prediction tab works in the softball dashboard, including:
+This document reflects the current Prediction tab implementation:
 
-- the descriptive (non-ML) logic,
-- the ML training/scoring pipeline,
-- fallback behavior when data is limited,
-- and how recommendations are generated.
+- pitcher-only UI recommendations
+- descriptive fallback logic in `app.py`
+- league-trained ML pipeline in `prediction_pipeline.py`
+- score-based recommendation selection + model-driver explanations
 
 ## 1) Scope and Entry Points
 
-Prediction is currently **pitcher-only** in the UI. The tab is built from these core server reactives and functions:
+Prediction is available only for **pitcher view** and **Trackman** data.
 
-- `prediction_df()` -> `build_prediction_by_pitch_type(data)`
-- `prediction_summary()` -> `select_prediction_summary(prediction_df())`
-- `ml_prediction_state()` -> `compute_ml_prediction_bundle(data, train_pool=all_data())`
-- `prediction_content()` and `prediction_table()` render either ML or descriptive outputs
+Core reactives/functions:
+
+- `prediction_df()` -> `build_prediction_by_pitch_type(pitcher_data())`
+- `prediction_summary()` -> `select_prediction_summary(prediction_df())` (descriptive fallback)
+- `ml_prediction_state()` -> `prediction_pipeline.compute_ml_prediction_bundle(...)`
+- `prediction_content()` decides ML cards vs historical fallback cards
+- `prediction_table()` chooses `prediction_pipeline.format_ml_prediction_table_display(...)` when ML is active
 
 High-level flow:
 
-1. Build per-pitch descriptive metrics for the selected pitcher.
-2. Try to train and score ML models.
-3. If ML succeeds, render ML recommendation cards and ML table.
-4. If ML fails or sample is too small, fall back to descriptive recommendation cards and table.
+1. Build descriptive per-pitch-type stats for the selected pitcher.
+2. Try league-trained ML scoring (filtered by current batter-side context).
+3. If ML is available, render ML strategy cards + advanced impacts/drivers.
+4. If ML is unavailable, render descriptive historical recommendations and fallback table.
 
 ---
 
-## 2) Descriptive Layer (Always Available if Data Exists)
+## 2) Descriptive Layer (Fallback + Baseline Context)
 
-Primary function: `build_prediction_by_pitch_type(df)`.
+Primary function: `build_prediction_by_pitch_type(df)` in `app.py`.
 
-For each pitch type, it computes:
+Per pitch type it computes:
 
 - `pitch_count`
 - `strike_pct`
+- `contact_pct`
 - `swing_count`
 - `whiff_count`
 - `contact_count`
-- `contact_pct`
 - `whiff_pct` (`whiff_count / swing_count`)
 - `hard_contact_count`
-- `hard_contact_risk` (`hard_contact_count / contact_count`)
-- `sample_warning` (small-sample warning text)
+- `hard_contact_risk` (weighted score: `(0.5*firm_contact + hard_contact) / contact_count`)
+- `sample_warning`
 
-### Event definitions
+Event definitions:
 
 - **Swing events**: `StrikeSwinging`, `FoulBallFieldable`, `FoulBallNotFieldable`, `InPlay`
 - **Strike events**: `StrikeCalled`, `StrikeSwinging`, `FoulBallFieldable`, `FoulBallNotFieldable`, `InPlay`
 - **Contact events**: `FoulBallFieldable`, `FoulBallNotFieldable`, `InPlay`
-- **Descriptive fallback EV bands**:
+- EV interpretation bands:
   - typical D1 contact: `70-75 mph`
   - firm contact: `75-80 mph`
-  - high-damage contact: `>=80 mph` (`PREDICTION_HARD_CONTACT_EV`)
+  - high-damage contact: `>=80 mph`
 
-### Descriptive recommendation selection
+Descriptive recommendation selector (`select_prediction_summary(pred)`):
 
-Function: `select_prediction_summary(pred)`.
+- **Best strike**: highest `strike_pct` with pitch-count tiers
+- **Best put-away**: highest `whiff_pct` with swing-count tiers
+- **Caution**: highest `hard_contact_risk` with contact-count tiers
 
-It chooses:
+Tiers:
 
-- **Best strike pitch**: highest `strike_pct` with tiered minimum volume checks
-- **Best put-away pitch**: highest `whiff_pct` with tiered swing-count minimums
-- **Caution pitch**: highest `hard_contact_risk` with tiered contact minimums
-
-Tiered thresholds:
-
-- strike candidate preferred minimum: `pitch_count >= 12`, fallback `>= 6`, then any
-- put-away candidate preferred minimum: `swing_count >= 8`, fallback `>= 4`, then any with swings
-- caution candidate preferred minimum: `contact_count >= 5`, fallback `>= 2`
+- strike: `pitch_count >= 12`, fallback `>= 6`, then any
+- put-away: `swing_count >= 8`, fallback `>= 4`, then any with swings
+- caution: `contact_count >= 5`, fallback `>= 2`
 
 ---
 
-## 3) ML Layer Overview
+## 3) ML Layer Overview (Current)
 
-Primary function: `compute_ml_prediction_bundle(df, train_pool=None)`.
+Primary function: `compute_ml_prediction_bundle(...)` in `prediction_pipeline.py`.
 
-The ML module fits **three separate binary logistic regression models**:
+The ML pipeline now uses **league-trained gradient-boosted classifiers** (with calibrated probabilities) rather than the older pitcher-only logistic setup.
 
-1. Strike probability model
-2. Whiff probability model
-3. Hard-contact probability model
+Three targets are modeled independently:
 
-The output is a bundle:
+1. strike probability
+2. whiff probability
+3. hard-contact probability
 
-- `use_ml` (bool)
-- `message` (fallback reason when ML is not used)
-- `df` (per-pitch-type predicted probabilities)
-- `summary` (best strike, best put-away, caution selections from ML outputs)
-- `training_note` (notes when training was widened beyond pitcher-only data)
+Returned bundle keys:
 
-If `scikit-learn` is unavailable or training conditions are not met, `use_ml=False` and the tab falls back to descriptive logic.
-
----
-
-## 4) ML Features and Targets
-
-### Features
-
-Configured feature sets:
-
-- Numeric (`ML_NUMERIC_FEATURES`):
-  - `PlateLocSide`
-  - `PlateLocHeight`
-  - `Balls`
-  - `Strikes`
-  - `RelSpeed`
-  - `SpinRate`
-  - `InducedVertBreak`
-  - `HorzBreak`
-- Categorical (`ML_CATEGORICAL_FEATURES`):
-  - pitch type column (`PITCH_TYPE_COL`)
-  - `BatterSide`
-  - `PitcherThrows`
-
-Only columns that actually exist in the data are used.
-
-### Targets
-
-Built in `prepare_pitcher_ml_training_frame(df)`:
-
-- `y_strike`: pitch event is in strike events set
-- `y_whiff`: pitch event is exactly `StrikeSwinging`
-- `y_hard`: `InPlay` and exit speed >= `80 mph` (`ML_HARD_CONTACT_EV`)
-
-Note: ML hard-contact threshold (`80 mph`) now aligns with the descriptive high-damage threshold.
+- `use_ml`
+- `message` (fallback reason when ML not used)
+- `df` (per-pitch predictions + scores + explanations)
+- `summary` (best command / best put-away / highest damage-risk cards)
+- `training_note`
+- `metrics_note`
+- `warning_note`
 
 ---
 
-## 5) Training Gates and Small-Sample Behavior
+## 4) Training Data, Context, and Gating
 
-Key constants:
+Training pool behavior:
 
-- `ML_MIN_TRAIN_ROWS = 30`
-- `ML_MIN_PER_CLASS = 1`
+- Models are trained from **league Trackman pool** (`league_df`), not just pitcher-only rows.
+- League rows are filtered by `batter_side_filter` (`all` / `right` / `left`) before training/scoring.
+- Pitch-type validity filtering removes blanks/undefined/other-like values.
 
-Checks:
+Key gates:
 
-1. At least 30 usable rows after pitch-type filtering.
-2. Each target has at least two classes and class counts meeting minimum constraints.
+- `ML_MIN_TRAIN_ROWS = 200` (league rows after engineering/filtering)
+- `ML_MIN_PER_CLASS = 25` for non-fallback model fitting
+- `ML_MAX_TRAIN_ROWS = 120000` (subsample cap for latency)
 
-To avoid single-class training failures, `ensure_binary(y)` flips one row if needed so logistic regression can fit. This is a robustness guardrail for sparse edge cases.
+Fallback behavior during training:
 
-### Widened training pool
+- If class balance is too sparse or degenerate for a target, uses `ConstantProbModel` prior fallback for that target.
+- `warning_note` surfaces these fallback-prior warnings in UI.
 
-If pitcher-level usable rows are below 30 and a broader filtered dataset is available:
+Dependency fallback:
 
-- model training uses `train_pool` (all pitches under current filters, across pitchers),
-- scoring still uses pitcher-specific representative rows,
-- `training_note` is shown in UI to disclose this behavior.
-
----
-
-## 6) Preprocessing and Model Configuration
-
-Function: `_fit_logistic_pipeline(X, y)`.
-
-Pipeline architecture:
-
-1. `ColumnTransformer`
-2. Numeric branch:
-   - `SimpleImputer(strategy="median")`
-   - `StandardScaler()`
-3. Categorical branch:
-   - `SimpleImputer(strategy="most_frequent")`
-   - `OneHotEncoder(handle_unknown="ignore", sparse_output=False, max_categories=25)`
-4. Classifier:
-   - `LogisticRegression(max_iter=4000, class_weight="balanced", random_state=42, solver="lbfgs")`
-
-This setup is designed for:
-
-- stable training on mixed feature types,
-- resilience to missing values,
-- and better minority-class handling (`class_weight="balanced"`).
+- If `scikit-learn` is unavailable, ML is disabled and descriptive mode is used.
 
 ---
 
-## 7) How Per-Pitch Predictions Are Scored
+## 5) Feature Engineering and Priors
 
-Function: `build_typical_pitch_feature_rows(df, num_cols, cat_cols)`.
+Feature engineering (`engineer_pitch_features`) includes:
 
-For each pitch type, one representative ("typical") row is created:
+- pitch shape/velo/location/count fields (`RelSpeed`, `SpinRate`, `SpinAxis`, `InducedVertBreak`, `HorzBreak`, `PlateLocSide`, `PlateLocHeight`, `Balls`, `Strikes`, `PitchofPA`)
+- lag/context features (`prev_pitch_type`, `prev_RelSpeed`, `delta_RelSpeed`)
+- zone/context flags (`in_zone`, `zone_upper`, `zone_inner`, `is_two_strike`, `is_hitter_count`, `is_pitcher_count`, `platoon_same`)
 
-- numeric features = mean within that pitch type
-- `BatterSide` = mode of the pitcher sample
-- `PitcherThrows` = mode of the pitcher sample
-- pitch type stays fixed to that pitch
+Smoothed priors (`compute_smoothed_priors` + `merge_priors`) add:
 
-Then each of the 3 trained models produces `predict_proba(...)[,1]` for each typical row:
+- batter x pitch-type smoothed tendencies (`b_whiff_s`, `b_hard_s`, `b_chase_s`)
+- pitcher x pitch-type smoothed tendencies (`p_strike_s`, `p_whiff_s`, `p_hard_s`, `p_usage_sm`)
+- empirical-Bayes-like shrinkage with `PRIOR_K = 25`
+
+Target labels:
+
+- `y_strike`: strike-event set
+- `y_whiff`: `StrikeSwinging`
+- `y_hard`: `InPlay` with EV `>= 80 mph`
+
+---
+
+## 6) Model Stack and Calibration
+
+Estimator selection:
+
+- prefer `xgboost.XGBClassifier` if available
+- else `lightgbm.LGBMClassifier` if available
+- else `sklearn.ensemble.HistGradientBoostingClassifier`
+
+Pipeline:
+
+- `ColumnTransformer`
+  - numeric: median imputation
+  - categorical: constant imputation + ordinal encoding with unknown handling
+- probability calibration with `CalibratedClassifierCV(method="isotonic", cv="prefit")`
+
+Validation metrics:
+
+- stored per target (e.g., ROC-AUC, PR-AUC, log-loss when available)
+- aggregated into `metrics_note` for Prediction tab display
+
+Caching:
+
+- in-memory cache + on-disk cache file `.prediction_model_cache.pkl`
+- fingerprint-driven reuse from league date/min/max + row count signature
+- UI button `Retrain Prediction Models` clears cache via `clear_prediction_cache(remove_disk=True)`
+
+---
+
+## 7) Inference Profiles and Decision Scores
+
+Per pitch type, synthetic pitcher-specific profile rows are built from observed medians:
+
+- neutral context row: `0-0`, early PA
+- put-away context row: `0-2`, later PA
+
+Predictions produced:
 
 - `predicted_strike_prob`
 - `predicted_whiff_prob`
 - `predicted_hard_contact_prob`
+- plus put-away-context versions for whiff/hard-contact
 
-Sample warnings are attached, and an extra warning is added for small pitch-type sample (`pitch_count < 20`):
+Decision scores:
 
-- `"Low sample — ML estimate may be unstable"`
+- `attack_score` (command-oriented: strike up, hard-contact down, command calibration term)
+- `putaway_score` (two-strike whiff reward minus hard-contact penalty + two-strike boost)
+- `danger_score` (hard-contact risk emphasis with strike reliability adjustment)
+- `composite_score` (overall profile impact used for ranking)
+
+Stability / sample overlays:
+
+- `pitch_count < 20` appends: `Low sample — estimates lean on league priors`
+- stability labels: `Very low stability`, `Low stability`, `Moderate`, `Stable`
 
 ---
 
-## 8) ML Recommendation Logic
+## 8) Recommendation Selection and Labels
 
-Function: `select_ml_prediction_summary(pred)`.
+ML recommendation picks are score-based with sample guardrails:
 
-It chooses one pitch for each recommendation card:
+- **Best command**: max `attack_score` (`>=12`, fallback `>=6`)
+- **Best put-away**: max `putaway_score` (`>=8`, fallback `>=4`)
+- **Highest risk**: max `danger_score` (`>=5`, fallback `>=3`)
 
-- **Best strike**: max `predicted_strike_prob`
-- **Best put-away**: max `predicted_whiff_prob`
-- **Caution**: max `predicted_hard_contact_prob`
+ML table recommendation tags:
 
-With tiered sample filters:
+- `Best command`
+- `Best put-away`
+- `Damage risk`
 
-- strike tier: `pitch_count >= 12`, fallback `>= 6`, then any
-- put-away tier: `pitch_count >= 8`, fallback `>= 6`, then any
-- caution tier: `pitch_count >= 5`, fallback `>= 3`, then any
-
-The table tags each pitch with recommendation labels:
+Fallback descriptive table tags (when ML disabled):
 
 - `Best strike`
 - `Best put-away`
@@ -221,37 +218,60 @@ The table tags each pitch with recommendation labels:
 
 ---
 
-## 9) Fallback and User Messaging
+## 9) Explanations, Drivers, and Advanced UI
 
-If ML cannot be used, UI shows descriptive cards/table and a message such as:
+Card explanation text:
 
-- sklearn not installed
-- insufficient training rows
-- model fitting failure
-- prediction/scoring failure
+- built from SHAP when available (`_shap_sentence`, `_shap_driver_lists`)
+- otherwise uses directional fallback profile deltas (`fallback_explanation`, `_fallback_driver_lists`)
 
-If ML is used with broadened training data, UI shows `training_note` to explain that models were fit on a wider sample.
+Each ML summary card carries:
+
+- predicted strike/whiff/hard probabilities (context-aware for put-away card)
+- matchup note (RHB / LHB / combined)
+- sample warning + stability label
+- driver lists: upward/downward factors + source (`SHAP` or fallback drivers)
+
+Advanced section (`prediction_content` / `prediction_advanced_*`):
+
+- impact bars for control / two-strike put-away / hard-contact-risk effects
+- model driver cards by recommendation type
+- sortable advanced table with impact scores
 
 ---
 
-## 10) Interpretation Guidance
+## 10) Fallback and Messaging
 
-- ML outputs are **estimated probabilities** under a typical feature profile, not guarantees.
-- Descriptive outputs are **historical rates** under current filters.
-- Small-sample warnings should be treated as reliability flags.
-- Caution pitch highlights hard-contact risk, not necessarily "never throw this pitch."
+If ML cannot run, fallback message in `message` may indicate:
+
+- `scikit-learn` unavailable
+- no league data under current filters
+- insufficient league rows for ML training
+- profile/scoring/training failure
+
+When fallback happens:
+
+- cards show historical-only framing
+- table uses descriptive metrics
+- small-sample warnings still appear from descriptive layer
 
 ---
 
-## 11) Key Implementation Functions (Quick Reference)
+## 11) Quick Function Reference
+
+Descriptive layer (`app.py`):
 
 - `build_prediction_by_pitch_type`
 - `select_prediction_summary`
-- `prepare_pitcher_ml_training_frame`
-- `_fit_logistic_pipeline`
-- `build_typical_pitch_feature_rows`
-- `compute_ml_prediction_bundle`
-- `select_ml_prediction_summary`
 - `format_prediction_table_display`
+
+ML layer (`prediction_pipeline.py`):
+
+- `compute_ml_prediction_bundle`
+- `engineer_pitch_features`
+- `compute_smoothed_priors`
+- `merge_priors`
+- `train_or_load_bundle`
+- `clear_prediction_cache`
 - `format_ml_prediction_table_display`
 
