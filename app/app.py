@@ -3356,24 +3356,24 @@ def server(input, output, session):
 
         def _short_explainer(key):
             if key == "best_strike":
-                return "Consistently lands in the zone."
+                return "Consistently lands in the zone and supports repeatable strike execution."
             if key == "best_putaway":
-                return "Generates swings and misses late in counts."
-            return "Gets hit hard more often when left over the plate."
+                return "Creates swing-and-miss outcomes in two-strike development situations."
+            return "Shows elevated hard-contact risk when location misses over the plate."
 
         def _takeaway(key):
             if key == "best_strike":
-                return "Most reliable pitch to get ahead in the count"
+                return "Most reliable pitch for building ahead-in-count execution"
             if key == "best_putaway":
-                return "Best swing-and-miss pitch in two-strike situations"
-            return "Most likely to get hit hard if mislocated"
+                return "Best swing-and-miss profile for two-strike progression work"
+            return "Primary damage-risk pitch to target in development plans"
 
         def _when_to_use(key):
             if key == "best_strike":
-                return ["Early counts (0-0, 1-0)", "When you need a strike"]
+                return ["Build early-count strike consistency (0-0, 1-0)", "Progression goal: repeat competitive strikes under pressure"]
             if key == "best_putaway":
-                return ["Two-strike counts", "After showing fastball"]
-            return ["Use carefully in hitter's counts", "Avoid middle-middle location"]
+                return ["Develop two-strike finish patterns", "Sequence after establishing velocity/shape contrast"]
+            return ["Reduce usage in hitter-friendly counts during development blocks", "Prioritize command targets that avoid middle-middle misses"]
 
         def _card_theme(key):
             if key == "best_strike":
@@ -3399,7 +3399,7 @@ def server(input, output, session):
                         style="font-size:15px;color:#222;margin-bottom:8px;",
                     ),
                     ui.div(_short_explainer(key), style="font-size:14px;color:#222;line-height:1.35;"),
-                    ui.div("When to use:", style="font-size:13px;font-weight:900;color:#111;margin-top:10px;"),
+                    ui.div("Player development focus:", style="font-size:13px;font-weight:900;color:#111;margin-top:10px;"),
                     ui.tags.ul(
                         ui.tags.li(bullets[0], style="font-size:13px;color:#222;"),
                         ui.tags.li(bullets[1], style="font-size:13px;color:#222;"),
@@ -3408,7 +3408,7 @@ def server(input, output, session):
                     warn_ui,
                 )
             else:
-                body = ui.div("Historical summary only (ML unavailable).", style="font-size:14px;color:#666;")
+                body = ui.div("Historical profile summary only (ML unavailable).", style="font-size:14px;color:#666;")
 
             return ui.div(
                 ui.div(title, style=f"font-size:14px;font-weight:900;letter-spacing:0.04em;color:{border_color};margin-bottom:8px;"),
@@ -3420,11 +3420,11 @@ def server(input, output, session):
         putaway_pitch = ((summ.get("best_putaway") or {}).get("pitch") or "this pitch")
         caution_pitch = ((summ.get("caution") or {}).get("pitch") or "this pitch")
         strategy_ui = ui.div(
-            ui.div("Pitching Strategy Summary:", style="font-size:15px;font-weight:900;color:#111;margin-bottom:4px;"),
+            ui.div("Pitching Development Summary:", style="font-size:15px;font-weight:900;color:#111;margin-bottom:4px;"),
             ui.div(
-                f"This pitcher leans on the {str(strike_pitch).lower()} for control, "
-                f"uses the {str(putaway_pitch).lower()} as the put-away pitch, "
-                f"and should be cautious with the {str(caution_pitch).lower()} when behind in the count.",
+                f"This pitcher currently profiles with the {str(strike_pitch).lower()} as the strongest strike-control option, "
+                f"the {str(putaway_pitch).lower()} as the top two-strike finisher, "
+                f"and the {str(caution_pitch).lower()} as the key damage-risk area to address when behind in the count.",
                 style="font-size:15px;color:#222;line-height:1.4;",
             ),
             style="padding:10px 12px;border:1px solid #d9d9d9;border-left:5px solid #111;border-radius:8px;background:#fcfcfc;margin-bottom:10px;",
@@ -3433,10 +3433,10 @@ def server(input, output, session):
         train_note = (st.get("training_note") or "").strip()
         train_ui = ui.div(train_note, style="font-size:12px;color:#666;font-style:italic;margin-bottom:6px;") if (use_ml and train_note) else None
         met_note = (st.get("metrics_note") or "").strip()
-        met_ui = ui.div(f"Validation: {met_note}", style="font-size:11px;color:#777;margin-bottom:6px;") if (use_ml and met_note) else None
+        met_ui = ui.div(f"Model validation: {met_note}", style="font-size:11px;color:#777;margin-bottom:6px;") if (use_ml and met_note) else None
         warn_note = (st.get("warning_note") or "").strip()
         warn_ui = ui.div(
-            f"Estimate note: {warn_note}",
+            f"Model estimate note: {warn_note}",
             style="font-size:12px;color:#854F0B;font-weight:700;margin-bottom:8px;",
         ) if (use_ml and warn_note) else None
         fb_ui = ui.div(fallback_note, style="font-size:14px;color:#854F0B;font-weight:700;margin-bottom:12px;") if (not use_ml and fallback_note) else None
@@ -3447,21 +3447,31 @@ def server(input, output, session):
                 ui.tags.summary("Advanced Metrics"),
                 ui.div(
                     ui.tags.p(
-                        "Model detail view: shows how each pitch profile shifts expected outcomes versus league-average baseline.",
+                        "This view shows how each pitch performs across three areas: getting strikes (control), finishing hitters (put-away), and limiting hard contact (risk).",
                         style="font-size:13px;color:#666;margin:8px 0 4px 0;",
                     ),
                     ui.tags.p(
-                        ui.tags.span("Green/right", style="color:#166534;font-weight:800;"),
-                        " = increases the outcome | ",
-                        ui.tags.span("Red/left", style="color:#991b1b;font-weight:800;"),
-                        " = decreases the outcome | Values are directional effects, not raw probabilities.",
-                        style="font-size:12px;color:#555;margin:0 0 8px 0;",
+                        ui.tags.span("Impact key:", style="font-weight:900;color:#111;"),
+                        " ",
+                        ui.tags.span("Right (green)", style="color:#166534;font-weight:900;"),
+                        " = helps that outcome | ",
+                        ui.tags.span("Left", style="font-weight:900;color:#111;"),
+                        " = hurts that outcome | ",
+                        ui.tags.span(
+                            "For hard-contact risk: lower (left) = safer, higher (right) = more damage risk.",
+                            style="font-weight:900;color:#7f1d1d;",
+                        ),
+                        style="font-size:12px;color:#555;margin:0 0 6px 0;",
+                    ),
+                    ui.tags.p(
+                        "Bars to the right show stronger impact. For hard-contact risk, lower values (left) are better because they mean less damage.",
+                        style="font-size:12px;color:#555;margin:0 0 8px 0;font-weight:700;",
                     ),
                     ui.output_ui("prediction_advanced_impacts_ui"),
                     ui.output_ui("prediction_model_drivers_ui"),
                     ui.output_table("prediction_advanced_table"),
                     ui.tags.p(
-                        "Use these values to compare relative strengths across this pitcher's options. Treat small gaps as equivalent tiers; prioritize cards and game context for final pitch calling.",
+                        "Use these values to compare relative strengths across this pitcher's options and prioritize development goals. Treat small gaps as equivalent tiers; pair these rankings with game context, sequencing plans, and player-development priorities.",
                         style="font-size:12px;color:#555;margin:8px 0 4px 0;",
                     ),
                 ),
@@ -3471,9 +3481,9 @@ def server(input, output, session):
         return ui.div(
             strategy_ui, train_ui, met_ui, warn_ui, fb_ui,
             ui.div(
-                _card("Best strike / command pitch", "best_strike"),
-                _card("Best put-away option", "best_putaway"),
-                _card("Highest damage-risk pitch", "caution"),
+                _card("Best strike / command development pitch", "best_strike"),
+                _card("Best two-strike development option", "best_putaway"),
+                _card("Highest damage-risk pitch to address", "caution"),
                 style="display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;",
             ),
             advanced_ui,
@@ -3556,10 +3566,10 @@ def server(input, output, session):
             sval = _fmt_signed(adf.loc[idx, metric_col])
             if has_low_stability:
                 if high_is_risk:
-                    return f"{pitch}: leans toward higher {metric_label.lower()} ({sval})"
+                    return f"{pitch}: leans toward higher {metric_label.lower()} (less safe) ({sval})"
                 return f"{pitch}: leans toward stronger {metric_label.lower()} ({sval})"
             if high_is_risk:
-                return f"{pitch}: highest {metric_label.lower()} ({sval})"
+                return f"{pitch}: highest {metric_label.lower()} (more likely to give up hard contact) ({sval})"
             return f"{pitch}: strongest {metric_label.lower()} ({sval})"
 
         chip_style = (
@@ -3567,15 +3577,15 @@ def server(input, output, session):
             "border:1px solid #d5d5d5;border-radius:999px;background:#fff;font-size:12px;color:#222;"
         )
         chips = ui.div(
-            ui.tags.span(_chip_text("attack_score", "control impact"), style=chip_style),
-            ui.tags.span(_chip_text("putaway_score", "two-strike put-away impact"), style=chip_style),
-            ui.tags.span(_chip_text("danger_score", "hard-contact risk impact", high_is_risk=True), style=chip_style),
+            ui.tags.span(_chip_text("attack_score", "strike reliability"), style=chip_style),
+            ui.tags.span(_chip_text("putaway_score", "put-away value"), style=chip_style),
+            ui.tags.span(_chip_text("danger_score", "hard-contact risk", high_is_risk=True), style=chip_style),
             style="margin:4px 0 10px 0;",
         )
         low_sample_badge = ui.div()
         if has_low_stability:
             low_sample_badge = ui.div(
-                "Low sample: directional only.",
+                "Low sample: trend only.",
                 style=(
                     "display:inline-block;margin:0 0 10px 0;padding:5px 9px;"
                     "border-radius:999px;border:1px solid #f0b429;background:#fff7e6;"
@@ -3583,7 +3593,13 @@ def server(input, output, session):
                 ),
             )
 
-        def _impact_row(metric_label, value, positive_color, negative_color):
+        metric_help = {
+            "Strike reliability": "Positive is favorable: better strike consistency than baseline.",
+            "Put-away value": "Positive is favorable: better two-strike swing-and-miss profile.",
+            "Hard-contact risk": "Lower is better (less hard contact allowed).",
+        }
+
+        def _impact_row(metric_label, value, positive_color, negative_color, is_risk=False):
             try:
                 fv = float(value)
             except Exception:
@@ -3596,13 +3612,29 @@ def server(input, output, session):
                 left_w, right_w = width_pct, 0.0
                 left_bg, right_bg = negative_color, "transparent"
             return ui.div(
-                ui.div(metric_label, style="min-width:210px;font-size:12px;color:#333;font-weight:700;"),
+                ui.div(
+                    ui.div(
+                        ui.tags.span(metric_label, title=metric_help.get(metric_label, "")),
+                        style="font-size:12px;color:#333;font-weight:700;",
+                    ),
+                    ui.div(
+                        "Lower is better (less hard contact allowed)." if is_risk else "",
+                        style="font-size:11px;color:#666;margin-top:1px;",
+                    ),
+                    style="min-width:210px;",
+                ),
                 ui.div(
                     ui.div(
                         ui.div(style=f"position:absolute;left:{50-left_w}%;top:0;height:100%;width:{left_w}%;background:{left_bg};"),
                         ui.div(style=f"position:absolute;left:50%;top:0;height:100%;width:{right_w}%;background:{right_bg};"),
                         ui.div(style="position:absolute;left:50%;top:0;height:100%;width:2px;background:#666;transform:translateX(-1px);"),
                         style="position:relative;height:12px;background:#f1f1f1;border:1px solid #d0d0d0;border-radius:999px;overflow:hidden;",
+                    ),
+                    ui.div(
+                        ui.tags.span("Safer", style="font-size:10px;color:#166534;font-weight:800;"),
+                        ui.tags.span(" <-> ", style="font-size:10px;color:#777;"),
+                        ui.tags.span("More damage risk", style="font-size:10px;color:#991b1b;font-weight:800;"),
+                        style="margin-top:2px;display:flex;justify-content:space-between;" if is_risk else "display:none;",
                     ),
                     style="flex:1;min-width:200px;",
                 ),
@@ -3619,16 +3651,16 @@ def server(input, output, session):
             stability_note = ui.div()
             if is_low:
                 stability_note = ui.div(
-                    "Low sample: directional only.",
+                    "Low sample: trend only.",
                     style="font-size:11px;color:#8a5d00;font-weight:800;margin:3px 0 6px 0;",
                 )
             cards.append(
                 ui.div(
                     ui.div(pitch, style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;"),
                     stability_note,
-                    _impact_row("Control impact", row["attack_score"], "#86c59a", "#e59a9a"),
-                    _impact_row("Two-strike put-away impact", row["putaway_score"], "#86c59a", "#e59a9a"),
-                    _impact_row("Hard-contact risk impact", row["danger_score"], "#e59a9a", "#86c59a"),
+                    _impact_row("Strike reliability", row["attack_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Put-away value", row["putaway_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Hard-contact risk", row["danger_score"], "#fca5a5", "#86c59a", is_risk=True),
                     style=(
                         f"border:1px solid #e0e0e0;border-radius:8px;background:#fff;padding:8px 10px;"
                         f"margin-bottom:8px;opacity:{card_opacity};"
@@ -3667,12 +3699,12 @@ def server(input, output, session):
                     style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;",
                 ),
                 ui.div(
-                    ui.tags.span("Upward drivers: ", style="font-weight:800;color:#166534;"),
+                    ui.tags.span("What's helping this pitch: ", style="font-weight:800;color:#166534;"),
                     ", ".join(pos[:2]),
                     style="font-size:12px;color:#222;margin-bottom:2px;",
                 ),
                 ui.div(
-                    ui.tags.span("Downward drivers: ", style="font-weight:800;color:#991b1b;"),
+                    ui.tags.span("What could hurt this pitch: ", style="font-weight:800;color:#991b1b;"),
                     ", ".join(neg[:2]),
                     style="font-size:12px;color:#222;margin-bottom:4px;",
                 ),
@@ -3684,18 +3716,18 @@ def server(input, output, session):
             )
 
         cards = [
-            _drivers_card("Best command", summ.get("best_strike")),
-            _drivers_card("Best put-away", summ.get("best_putaway")),
-            _drivers_card("Highest risk", summ.get("caution")),
+            _drivers_card("Top strike-control development pitch", summ.get("best_strike")),
+            _drivers_card("Top two-strike development pitch", summ.get("best_putaway")),
+            _drivers_card("Top damage-risk development priority", summ.get("caution")),
         ]
         cards = [c for c in cards if c is not None]
         if not cards:
             return ui.div()
 
         return ui.div(
-            ui.div("Model Drivers (SHAP)", style="font-size:14px;font-weight:900;color:#111;margin:10px 0 6px 0;"),
+            ui.div("Why each pitch grades this way", style="font-size:14px;font-weight:900;color:#111;margin:10px 0 6px 0;"),
             ui.div(
-                "SHAP drivers explain why model probabilities moved; impact bars show decision-score ranking.",
+                "This section highlights what is helping each pitch succeed and what could make it more vulnerable, using model-based signals translated for coaching decisions.",
                 style="font-size:12px;color:#555;margin:0 0 8px 0;",
             ),
             *cards,
@@ -3715,12 +3747,12 @@ def server(input, output, session):
         adf = adf.sort_values("composite_score", ascending=False, kind="mergesort")
         adf = adf[keep].rename(columns={
             PITCH_TYPE_COL: "Pitch",
-            "attack_score": "Control impact",
-            "putaway_score": "Two-strike put-away impact",
-            "danger_score": "Hard-contact risk impact",
-            "composite_score": "Overall profile impact",
+            "attack_score": "Strike reliability",
+            "putaway_score": "Put-away value",
+            "danger_score": "Hard-contact risk",
+            "composite_score": "Overall decision value",
         })
-        for c in ["Control impact", "Two-strike put-away impact", "Hard-contact risk impact", "Overall profile impact"]:
+        for c in ["Strike reliability", "Put-away value", "Hard-contact risk", "Overall decision value"]:
             if c in adf.columns:
                 adf[c] = adf[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "—")
         return adf

@@ -182,12 +182,18 @@ Predictions produced:
 - `predicted_hard_contact_prob`
 - plus put-away-context versions for whiff/hard-contact
 
-Decision scores:
+Decision scores (UI-aligned terminology):
 
-- `attack_score` (command-oriented: strike up, hard-contact down, command calibration term)
-- `putaway_score` (two-strike whiff reward minus hard-contact penalty + two-strike boost)
-- `danger_score` (hard-contact risk emphasis with strike reliability adjustment)
-- `composite_score` (overall profile impact used for ranking)
+- `attack_score` -> displayed as `Strike reliability`
+- `putaway_score` -> displayed as `Put-away value`
+- `danger_score` -> displayed as `Hard-contact risk`
+- `composite_score` -> displayed as `Overall decision value` (ranking score)
+
+Interpretation notes:
+
+- Advanced values are relative impact scores (not raw probabilities or percentages).
+- Higher is generally stronger for strike reliability and put-away value.
+- For hard-contact risk, lower/more negative is safer.
 
 Stability / sample overlays:
 
@@ -230,11 +236,12 @@ Each ML summary card carries:
 - predicted strike/whiff/hard probabilities (context-aware for put-away card)
 - matchup note (RHB / LHB / combined)
 - sample warning + stability label
-- driver lists: upward/downward factors + source (`SHAP` or fallback drivers)
+- driver lists: `What's helping this pitch` / `What could hurt this pitch` + source (`SHAP` or fallback drivers)
 
 Advanced section (`prediction_content` / `prediction_advanced_*`):
 
-- impact bars for control / two-strike put-away / hard-contact-risk effects
+- impact bars for strike reliability / put-away value / hard-contact risk
+- hard-contact risk bar includes inline `Safer <-> More damage risk` cue
 - model driver cards by recommendation type
 - sortable advanced table with impact scores
 

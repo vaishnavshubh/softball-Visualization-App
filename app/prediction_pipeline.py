@@ -526,7 +526,7 @@ def fallback_explanation(
             elif name == "RelSpeed":
                 deltas.append(("above-profile velocity" if diff > 0 else "below-profile velocity", abs(diff)))
             elif name == "InducedVertBreak":
-                deltas.append(("more ride than usual" if diff > 0 else "less ride than usual", abs(diff)))
+                deltas.append(("more vertical break than usual" if diff > 0 else "less vertical break than usual", abs(diff)))
             elif name in ("in_zone",):
                 deltas.append(("more often in-zone in this profile" if diff > 0 else "fewer in-zone pitches", abs(diff)))
             elif name == "is_two_strike":
@@ -847,11 +847,11 @@ def _fallback_driver_lists(row: pd.Series, baseline: pd.Series, top_n: int = 2) 
     candidates: list[tuple[str, float]] = []
     feature_map = {
         "RelSpeed": ("higher velocity", "lower velocity"),
-        "InducedVertBreak": ("more ride", "less ride"),
+        "InducedVertBreak": ("more vertical break", "less vertical break"),
         "HorzBreak": ("more horizontal movement", "less horizontal movement"),
         "SpinRate": ("higher spin rate", "lower spin rate"),
         "PlateLocHeight": ("higher location", "lower location"),
-        "PlateLocSide": ("more arm-side location", "more glove-side location"),
+        "PlateLocSide": ("more arm-side location drift", "more glove-side location drift"),
         "in_zone": ("more in-zone tendency", "less in-zone tendency"),
         "zone_upper": ("more upper-zone tendency", "less upper-zone tendency"),
         "zone_inner": ("more inner-half tendency", "less inner-half tendency"),
