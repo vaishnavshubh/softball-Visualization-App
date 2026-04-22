@@ -35,12 +35,328 @@ from shiny import App, render, ui, reactive
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
-import prediction_pipeline  # noqa: E402  # league-wide ML for Prediction tab
 from constants import *  # noqa: E402, F401, F403  # static config / rosters / colors
+import prediction_pipeline  # noqa: E402  # league-wide ML for Prediction tab (after APP_DIR on path)
 
 V3_PATH = os.path.join(APP_DIR, "data", "v3")
 STATIC_DIR = os.path.join(APP_DIR, "static")
 
+#Team name map
+TEAM_NAME_MAP = {
+    "UNI_KAN_SB": "University of Kansas",
+    "PUR_BOI_SB": "Purdue University",
+    "TEX_STA_SB": "Texas State University",
+    "UNI_IOW_SB": "University of Iowa",
+    "UNI_ARK_SB": "University of Arkansas",
+    "NEB_COR_SB": "University of Nebraska",
+    "BOS_COL_SB": "Boston College",
+    "CRE_UNI_SB": "Creighton University",
+    "IOW_STA_SB": "Iowa State University",
+    "STA_WOL_SB": "North Carolina State University",
+    "LOU_TEC_SB": "Louisiana Tech University",
+    "DUK_BLU_SB": "Duke University",
+    "UNI_UTA_SB": "University of Utah",
+    "ILL_FIG_SB": "University of Illinois",
+    "FLO_GAT_SB": "University of Florida",
+    "CAL_BAP_SB": "California Baptist University",
+    "BYU_COU_SB": "Brigham Young University",
+    "GEO_BUL_SB": "University of Georgia",
+    "NOR_GEO_SB": "University of North Georgia",
+    "ARI_WIL_SB": "University of Arizona",
+    "AUB_TIG_SB": "Auburn University",
+    "MIN_GOL_SB": "University of Minnesota",
+    "UNI_KEN_SB": "University of Kentucky",
+    "LON_BEA_SB": "Long Beach State University",
+    "LSU_TIG_SB": "Louisiana State University",
+    "CLE_TIG_SB": "Clemson University",
+    "OKL_SOO_SB": "University of Oklahoma",
+    "OKL_STA_SB": "Oklahoma State University",
+    "ORE_STA_SB": "Oregon State University",
+    "VIR_CAV_SB": "University of Virginia",
+    "TEX_TEC_SB": "Texas Tech University",
+    "SAN_DIE1_SB": "San Diego State University",
+    "SAN_DIE2_SB": "University of San Diego",
+    "UNI_TEN_SB": "University of Tennessee",
+    "STA_UNI_SB": "Stanford University",
+    "VIR_TEC_SB": "Virginia Tech",
+    "TEX_A&M_SB": "Texas A&M University",
+    "MEM_TIG_SB": "University of Memphis",
+    "IND_HOO_SB": "Indiana University",
+    "CHA_49E_SB": "University of North Carolina at Charlotte",
+    "OMA_MAV_SB": "University of Nebraska Omaha",
+    "WAS_HUS_SB": "University of Washington",
+    "TEX_LON_SB": "University of Texas",
+    "WIC_STA_SB": "Wichita State University",
+    "ABI_CHR_SB": "Abilene Christian University",
+    "AKR_ZIP_SB": "University of Akron",
+    "ALA_A&M_SB": "Alabama A&M University",
+    "ALA_CRI_SB": "University of Alabama",
+    "ALC_STA_SB": "Alcorn State University",
+    "AND_UNI_SB": "Anderson University",
+    "APP_STA_SB": "Appalachian State University",
+    "ARI_STA_SB": "Arizona State University",
+    "AUG_UNI_SB": "Augusta University",
+    "AUS_PEA_SB": "Austin Peay State University",
+    "BAL_STA_SB": "Ball State University",
+    "BAR_UNI_SB": "Barry University",
+    "BAY_BEA_SB": "Baylor University",
+    "BEL_UNI_SB": "Belhaven University",
+    "BEL_BEA_SB": "Belmont University",
+    "BET_COO_SB": "Bethune-Cookman University",
+    "BIN_UNI_SB": "Binghamton University",
+    "BOI_STA_SB": "Boise State University",
+    "BOS_UNI_SB": "Boston University",
+    "BRA_BRA_SB": "Bradley University",
+    "BRO_UNI_SB": "Brown University",
+    "BRY_UNI_SB": "Bryant University",
+    "BUC_UNI_SB": "Bucknell University",
+    "BUT_COM_SB": "Butler Community College",
+    "BUT_UNI_SB": "Butler University",
+    "CAL_POL_SB": "California Polytechnic State University",
+    "CAL_STA_SB": "California State University, Fullerton",
+    "CAL_GOL_SB": "University of California, Berkeley",
+    "CAL_STA1_SB": "California State University, Northridge",
+    "CAM_FIG_SB": "Campbell University",
+    "CAR_NEW_SB": "Carson-Newman University",
+    "CEN_ARK_SB": "University of Central Arkansas",
+    "CEN_MIC_SB": "Central Michigan University",
+    "CHI_COL_SB": "Chipola College",
+    "COA_CAR_SB": "Coastal Carolina University",
+    "COL_CHA_SB": "College of Charleston",
+    "COL_CHR_SB": "Colorado Christian University",
+    "COL_STA_SB": "Colorado State University",
+    "COP_COP_SB": "Copiah-Lincoln Community College",
+    "CSU_BAK_SB": "California State University, Bakersfield",
+    "DEP_BLU_SB": "DePaul University",
+    "DET_MER_SB": "University of Detroit Mercy",
+    "DRA_UNI_SB": "Drake University",
+    "EAS_CAR_SB": "East Carolina University",
+    "EAS_TEN_SB": "East Tennessee State University",
+    "EAS_TEX_SB": "East Texas A&M University",
+    "EAS_ILL_SB": "Eastern Illinois University",
+    "ELO_UNI_SB": "Elon University",
+    "EMB_RID_SB": "Embry-Riddle Aeronautical University",
+    "EMM_UNI_SB": "Emmanuel University",
+    "EMP_STA_SB": "Emporia State University",
+    "EVA_PUR_SB": "University of Evansville",
+    "FLA_UNI_SB": "Flagler College",
+    "FLO_ATL_SB": "Florida Atlantic University",
+    "FLO_GUL_SB": "Florida Gulf Coast University",
+    "FLO_INT_SB": "Florida International University",
+    "FLO_STA_SB": "Florida State University",
+    "FOR_UNI_SB": "Fordham University",
+    "FRE_STA_SB": "California State University, Fresno",
+    "FUR_PAL_SB": "Furman University",
+    "GAR_CIT_SB": "Garden City Community College",
+    "GAR_RUN_SB": "Gardner-Webb University",
+    "GEO_WAS1_SB": "George Washington University",
+    "GEO_HOY_SB": "Georgetown University",
+    "GEO_GWI_SB": "Georgia Gwinnett College",
+    "GEO_SOU_SB": "Georgia Southern University",
+    "GEO_STA_SB": "Georgia State University",
+    "GEO_TEC_SB": "Georgia Institute of Technology",
+    "GRA_CAN_SB": "Grand Canyon University",
+    "GRA_JUN_SB": "Grand Junction",
+    "GRA_JUN1_SB": "Grand Junction Central",
+    "GRE_BAY_SB": "University of Wisconsin-Green Bay",
+    "HAW_RAI_SB": "University of Hawaiʻi",
+    "HOW_UNI_SB": "Howard University",
+    "HUT_COM_SB": "Hutchinson Community College",
+    "IDA_STA_SB": "Idaho State University",
+    "ILL_STA_SB": "Illinois State University",
+    "INC_WOR_SB": "University of the Incarnate Word",
+    "IND_STA_SB": "Indiana State University",
+    "IND_UNI_SB": "Indiana University Indianapolis",
+    "JAC_STA_SB": "Jacksonville State University",
+    "JAC_UNI_SB": "Jacksonville University",
+    "JAM_MAD_SB": "James Madison University",
+    "JON_COL_SB": "Jones College",
+    "KEN_STA_SB": "Kennesaw State University",
+    "LAM_UNI_SB": "Lamar University",
+    "LEE_UNI_SB": "Lee University",
+    "LEH_UNI_SB": "Lehigh University",
+    "LIB_LAD_SB": "Liberty University",
+    "LIN_MEM_SB": "Lincoln Memorial University",
+    "LIN_LIO_SB": "Lindenwood University",
+    "LIP_LIP_SB": "Lipscomb University",
+    "LIU_SHA_SB": "Long Island University",
+    "LON_LAN_SB": "Longwood University",
+    "LOU_COL_SB": "Louisburg College",
+    "LOU_RAG_SB": "University of Louisiana",
+    "LOU_CAR_SB": "University of Louisville",
+    "LOY_CHI_SB": "Loyola University Chicago",
+    "LOY_MAR_SB": "Loyola Marymount University",
+    "MAR_UNI_SB": "Marist University",
+    "MAR_THU_SB": "Marshall University",
+    "MAR_TER_SB": "University of Maryland",
+    "MCL_COL_SB": "McLennan Community College",
+    "MCN_STA1_SB": "McNeese State University",
+    "MER_BEA_SB": "Mercer University",
+    "MET_STA_SB": "Metropolitan State University of Denver",
+    "MIA_(OH_SB": "Miami Ohio University",
+    "MIC_STA_SB": "Michigan State University",
+    "MIC_WOL_SB": "University of Michigan",
+    "MID_TEN_SB": "Middle Tennessee State University",
+    "MIS_STA_SB": "Mississippi State University",
+    "MIS_STA1_SB": "Missouri State University",
+    "MIS_TIG_SB": "University of Missouri",
+    "MON_GRI_SB": "University of Montana",
+    "MUR_STA_SB": "Murray State College",
+    "NEW_MEX1_SB": "University of New Mexico",
+    "NEW_MEX_SB": "New Mexico State University",
+    "NIC_STA_SB": "Nicholls State University",
+    "NOR_ALA_SB": "University of North Alabama",
+    "NOR_CAR2_SB": "North Carolina A&T State University",
+    "NOR_CAR1_SB": "North Carolina Central University",
+    "NOR_CAR_SB": "University of North Carolina",
+    "NOR_DAK1_SB": "University of North Dakota",
+    "NOR_DAK_SB": "North Dakota State University",
+    "NOR_ILL_SB": "Northern Illinois University",
+    "NOR_FLO_SB": "Northwest Florida State College",
+    "NOR_STA_SB": "Northwestern State University",
+    "NOR_WIL_SB": "Northwestern University",
+    "NOR_UNI_SB": "Northwood University",
+    "OHI_STA_SB": "Ohio State University",
+    "OKL_CHR_SB": "Oklahoma Christian University",
+    "OLE_MIS_SB": "University of Mississippi",
+    "ORE_DUC_SB": "University of Oregon",
+    "PEN_STA_SB": "Pennsylvania State University",
+    "PRA_VIE_SB": "Prairie View A&M University",
+    "PRE_BLU_SB": "Presbyterian College",
+    "PRI_UNI_SB": "Princeton University",
+    "PRO_FRI_SB": "Providence College",
+    "QUE_UNI_SB": "Queens University of Charlotte",
+    "RAD_UNI_SB": "Radford University",
+    "ROA_STA_SB": "Roane State Community College",
+    "RUT_RUT_SB": "Rutgers University",
+    "SAI_FRA_SB": "Saint Francis University",
+    "SAI_LEO_SB": "Saint Leo University",
+    "SAI_MAR_SB": "Saint Mary's College",
+    "SAL_LAK_SB": "Salt Lake Community College",
+    "SAM_HOU_SB": "Sam Houston State University",
+    "SAM_UNI_SB": "Samford University",
+    "SAN_JOS_SB": "San Jose State University",
+    "SAN_CLA_SB": "Santa Clara University",
+    "SEA_UNI_SB": "Seattle University",
+    "SEM_STA_SB": "Seminole State College",
+    "SET_HAL_SB": "Seton Hall University",
+    "SHO_UNI_SB": "Shorter University",
+    "SOU_ALA_SB": "University of South Alabama",
+    "SOU_CAR_SB": "University of South Carolina",
+    "SOU_DAK_SB": "South Dakota State University",
+    "SOU_FLO_SB": "University of South Florida",
+    "SOU_MIS1_SB": "Southeast Missouri State University",
+    "SOU_LOU_SB": "Southeastern Louisiana University",
+    "SOU_ILL_SB": "Southern Illinois University Edwardsville",
+    "SOU_ILL1_SB": "Southern Illinois University",
+    "SOU_IND_SB": "University of Southern Indiana",
+    "SOU_MIS_SB": "University of Southern Mississippi",
+    "SOU_NAZ_SB": "Southern Nazarene University",
+    "SOU_UNI_SB": "Southern University",
+    "SOU_UTA_SB": "Southern Utah University",
+    "ST._BON_SB": "St. Bonaventure University",
+    "STE_AUS_SB": "Stephen F. Austin State University",
+    "STE_HAT_SB": "Stetson University",
+    "SYR_ORA_SB": "Syracuse University",
+    "TEM_COL_SB": "Temple College",
+    "TEN_TEC_SB": "Tennessee Tech University",
+    "TEX_A&M2_SB": "Texas A&M University-Corpus Christi",
+    "TRO_TRO_SB": "Troy University",
+    "TUL_GOL_SB": "University of Tulsa",
+    "TUS_UNI_SB": "Tusculum University",
+    "RIV_RIV_SB": "University of California, Riverside",
+    "SAN_DIE_SB": "University of California, San Diego",
+    "SAN_BAR_SB": "University of California, Santa Barbara",
+    "UCF_KNI_SB": "University of Central Florida",
+    "UCL_BRU_SB": "University of California, Los Angeles",
+    "UCO_HUS_SB": "University of Connecticut",
+    "UIC_UIC_SB": "University of Illinois Chicago",
+    "UNC_WIL_SB": "University of North Carolina Wilmington",
+    "UNI_ALA_SB": "University of Alabama at Birmingham",
+    "UNI_DEL_SB": "University of Delaware",
+    "UNI_HOU_SB": "University of Houston",
+    "UNI_LOU_SB": "University of Louisiana Monroe",
+    "UNI_MAS_SB": "University of Massachusetts",
+    "UNI_MIS_SB": "University of Missouri-Kansas City",
+    "UNI_NEV_SB": "University of Nevada",
+    "UNI_NOR2_SB": "University of North Florida",
+    "UNI_NOR1_SB": "University of North Texas",
+    "UNI_NOR3_SB": "University of Northern Iowa",
+    "DAV_AGG_SB": "UC Davis Aggies",
+    "HAM_UNI_SB": "Hampton University",
+    "UNI_NOT_SB": "University of Notre Dame",
+    "UNI_SAN_SB": "University of San Diego",
+    "UNI_SOU_SB": "University of South Dakota",
+    "UNI_ST.2_SB": "University of St. Thomas",
+    "UNI_TEX1_SB": "University of Texas at El Paso",
+    "UNI_TEX2_SB": "University of Texas at San Antonio",
+    "UNI_TOL_SB": "University of Toledo",
+    "UNI_WES_SB": "University of West Georgia",
+    "UNL_UNL_SB": "University of Nevada, Las Vegas",
+    "USC_AIK_SB": "University of South Carolina Aiken",
+    "USC_BEA_SB": "University of South Carolina Beaufort",
+    "USC_UPS_SB": "University of South Carolina Upstate",
+    "ARL_MAV_SB": "University of Texas at Arlington",
+    "UTA_STA_SB": "Utah State University",
+    "UTA_TEC_SB": "Utah Tech University",
+    "UTA_VAL_SB": "Utah Valley University",
+    "VAL_STA_SB": "Valdosta State University",
+    "VAL_VAL_SB": "Valparaiso University",
+    "VIL_WIL_SB": "Villanova University",
+    "WAL_STA1_SB": "Wallace State Community College",
+    "WAL_STA_SB": "Walters State Community College",
+    "WEB_STA_SB": "Weber State University",
+    "WES_CAR_SB": "Western Carolina University",
+    "WES_NEB_SB": "Western Nebraska Community College",
+    "WIN_EAG_SB": "Winthrop University",
+    "WIS_BAD_SB": "University of Wisconsin",
+    "WOF_TER_SB": "Wofford College",
+    "YAL_BUL_SB": "Yale University",
+    "DEL_STA_SB": "Delaware State University",
+    "ALA_STA_SB": "Alabama State University",
+    "DAY_FLY_SB": "University of Dayton",
+    "MUR_STA1_SB": "Murray State University",
+    "OAK_GOL_SB": "Oakland University",
+    "TAR_STA_SB": "Tarleton State University",
+    "UNI_PIT_SB": "University of Pittsburgh",
+    "EAS_KEN_SB": "Eastern Kentucky University",
+    "MOR_STA_SB": "Morehead State University",
+    
+}
+
+
+# Put your Purdue logo image inside app/static/
+# Example file name:
+PURDUE_LOGO_FILENAME = "purdue-logo.png"
+PURDUE_LOGO_SRC = PURDUE_LOGO_FILENAME  # served from static_assets
+
+FIG_SIZE = (3.6, 2.8)
+
+COLUMNS_TO_KEEP = [
+    "PitchNo", "Date", "Time", "PitchofPA",
+    "Pitcher", "PitcherId", "PitcherThrows", "PitcherTeam",
+    "Batter", "BatterId", "BatterSide", "BatterTeam",
+    "Balls", "Strikes", "PitchCall", "TaggedPitchType",
+    "RelSpeed", "SpinRate", "SpinAxis", "Tilt",
+    "InducedVertBreak", "HorzBreak",
+    "PlateLocHeight", "PlateLocSide",
+    "TaggedHitType", "PlayResult", "KorBB", "ExitSpeed", "Angle", "Direction",
+]
+
+PITCH_TYPE_COL = "TaggedPitchType"
+X_MOV = "HorzBreak"
+Y_MOV = "InducedVertBreak"
+
+# Fixed strike zone (feet)
+ZONE_LEFT, ZONE_RIGHT = -0.83, 0.83
+ZONE_BOTTOM, ZONE_TOP = 1.5, 3.5
+
+MOV_XLIM = (-20, 20)
+MOV_YLIM = (-20, 20)
+
+# Purdue detection (robust: does not require exact team string)
+
+PURDUE_CODE = "PUR_BOI_SB"
 
 def is_purdue_team(team_value: str) -> bool:
     if team_value is None or pd.isna(team_value):
@@ -301,6 +617,32 @@ def get_csv_paths_with_dates():
     return rows, gmin, gmax
 
 # Map Purdue batter names → correct BatterIds (fix for Trackman placeholder IDs)
+PURDUE_BATTER_ID_MAP = {
+    "Armstrong, Ansley": "100000001217",
+    "Bailey, Emma": "100000001224",
+    "Bailey, Kyndall": "100000001233",
+    "Banks, Khloe": "100000001231",
+    "Campbell, Ashlynn": "100000001219",
+    "Condon, Maura": "100000001235",
+    "Douglas, Bella": "1000000001384",
+    "Fontenot, Bri": "1000000001385",
+    "Franks, Kylie": "100000001232",
+    "Gossett, Julia": "100000001228",
+    "Klochack, Kendall": "100000001230",
+    "Krantz, Jensen": "100000001225",
+    "McFadden, Olivia": "100000001237",
+    "Meeks, Alivia": "100000001216",
+    "Moore, Anna": "1000000001383",
+    "Moore, Malone": "100000002641",
+    "Painter, Haley": "100000005709",
+    "Perez, Brooke": "1000000001389",
+    "Polar, Moriah": "100000001236",
+    "Rainey, Kendyl": "1000000001382",
+    "Reefe, Delaney": "100000001223",
+    "Sarago, Kate": "1000000001388",
+    "Sosa, Gabby": "1000000001386",
+    "Waggoner, Haley": "1000000001387",
+}
 
 
 def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
@@ -363,9 +705,41 @@ def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
     return df
 
 # ── Rapsodo CSV loader ────────────────────────────────────────────────────
+RAPSODO_PITCH_MAP = {
+    "Fastball": "Fastball",
+    "Riser": "Riseball",
+    "CurveBall": "Curveball",
+    "ChangeUp": "Changeup",
+    "Dropball": "Dropball",
+    "OffSpeedDrop": "Offspeed",
+    "OffSpeedRise": "Offspeed",
+    "TwoSeamFastball": "Fastball",
+    "DropCurve": "Drop-Curve",
+}
 
+RAPSODO_COL_MAP = {
+    "No": "PitchNo",
+    "Pitch Type": "TaggedPitchType",
+    "Velocity": "RelSpeed",
+    "Total Spin": "SpinRate",
+    "Strike Zone Side": "PlateLocSide",
+    "Strike Zone Height": "PlateLocHeight",
+    "HB (trajectory)": "HorzBreak",
+    "VB (trajectory)": "InducedVertBreak",
+    "Spin Direction": "SpinAxis",
+    "Release Height": "RelHeight",
+    "Release Side": "RelSide",
+    "Release Extension (ft)": "Extension",
+}
 
 # Map Rapsodo Player IDs → Trackman PitcherIds
+RAPSODO_TO_TRACKMAN_ID = {
+    "1065934": "100000001224",    # Emma Bailey
+    "1502155": "1000000001385",   # Bri Fontenot
+    "907287":  "1000000001389",   # Brooke Perez
+    "1120697": "100000001228",    # Julia Gossett
+    "1500934": "100000002641",    # Malone Moore
+}
 
 def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
     try:
@@ -451,6 +825,25 @@ def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
 # HitTrax data (session-aggregated batter data)
 # ---------------------------------------------------------------------------
 # Map HitTrax filename stem → Trackman-format player name
+HITTRAX_NAME_MAP = {
+    "Kloe_Banks":       "Banks, Khloe",
+    "Anna_Moore":       "Moore, Anna",
+    "Ansley_Amstrong":  "Armstrong, Ansley",
+    "Bella_Douglas":    "Douglas, Bella",
+    "Delaney_Reefe":    "Reefe, Delaney",
+    "Gabby_Sosa":       "Sosa, Gabby",
+    "Haley_Painter":    "Painter, Haley",
+    "Haley_Waggoner":   "Waggoner, Haley",
+    "Jensen_Krantz":    "Krantz, Jensen",
+    "Jordyn_Rudd-Lee":  "Rudd-Lee, Jordyn",
+    "Julia_Gossett":    "Gossett, Julia",
+    "Kate_Sarago":      "Sarago, Kate",
+    "Kendyl_Rainey":    "Rainey, Kendyl",
+    "Kylie_Franks":     "Franks, Kylie",
+    "Maura_Condon":     "Condon, Maura",
+    "Moriah_Polar":     "Polar, Moriah",
+    "Alivia_Meeks":     "Meeks, Alivia",
+}
 
 def load_hittrax_csv(full_path: str) -> pd.DataFrame | None:
     try:
@@ -512,6 +905,28 @@ def build_hittrax_df():
 HITTRAX_DF = build_hittrax_df()
 
 
+ACTIVE_ROSTER_2026 = {
+    "Rainey, Kendyl",
+    "Banks, Khloe",
+    "Franks, Kylie",
+    "Moore, Anna",
+    "Reefe, Delaney",
+    "Douglas, Bella",
+    "Krantz, Jensen",
+    "Condon, Maura",
+    "Fontenot, Bri",
+    "Moore, Malone",
+    "Campbell, Ashlynn",
+    "Bailey, Emma",
+    "Sosa, Gabby",
+    "Waggoner, Haley",
+    "Gossett, Julia",
+    "Sarago, Kate",
+    "Perez, Brooke",
+    "Armstrong, Ansley",
+    "Painter, Haley",
+    "Polar, Moriah",
+}
 
 
 
@@ -914,7 +1329,10 @@ def compute_comparison_metrics(df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 # Prediction tab: descriptive + ML pitch-type analysis
 # ---------------------------------------------------------------------------
-PREDICTION_HARD_CONTACT_EV = 85.0
+# D1-oriented EV bands for descriptive fallback interpretation.
+PREDICTION_EV_TYPICAL_MIN = 70.0
+PREDICTION_EV_TYPICAL_MAX = 75.0
+PREDICTION_HARD_CONTACT_EV = 80.0
 PREDICTION_MIN_STRIKE_N = 12
 PREDICTION_MIN_SWINGS_PUTAWAY = 8
 PREDICTION_MIN_CONTACT_CAUTION = 5
@@ -952,7 +1370,20 @@ def build_prediction_by_pitch_type(df: pd.DataFrame) -> pd.DataFrame:
         swing_count = int(is_swing.sum())
         whiff_count = int(is_whiff.sum())
         contact_count = int(is_contact.sum())
+        firm_contact_count = int(
+            (
+                in_play
+                & (ev_s >= PREDICTION_EV_TYPICAL_MAX)
+                & (ev_s < PREDICTION_HARD_CONTACT_EV)
+            ).sum()
+        )
         hard_contact_count = int((in_play & (ev_s >= PREDICTION_HARD_CONTACT_EV)).sum())
+        # Weighted damage score for fallback mode:
+        # firm (75-80) is directional, high-damage (80+) is primary risk.
+        hard_contact_score = (
+            ((0.5 * firm_contact_count) + hard_contact_count) / contact_count
+            if contact_count > 0 else np.nan
+        )
 
         rows.append({
             PITCH_TYPE_COL: ptype,
@@ -964,7 +1395,7 @@ def build_prediction_by_pitch_type(df: pd.DataFrame) -> pd.DataFrame:
             "contact_count": contact_count,
             "whiff_pct": (whiff_count / swing_count) if swing_count > 0 else np.nan,
             "hard_contact_count": hard_contact_count,
-            "hard_contact_risk": (hard_contact_count / contact_count) if contact_count > 0 else np.nan,
+            "hard_contact_risk": hard_contact_score,
             "sample_warning": _prediction_sample_warning(n),
         })
 
@@ -1018,7 +1449,14 @@ def select_prediction_summary(pred: pd.DataFrame) -> dict:
     tier = tier[pd.notna(tier["hard_contact_risk"])]
     if not tier.empty and tier["hard_contact_count"].sum() > 0:
         best = tier.loc[tier["hard_contact_risk"].idxmax()]
-        out["caution"] = {**_build(best), "coach_blurb": f"High share of hard contact (EV ≥ {int(PREDICTION_HARD_CONTACT_EV)} mph) — be selective with location."}
+        out["caution"] = {
+            **_build(best),
+            "coach_blurb": (
+                f"Elevated firm/high-damage contact profile (75-80 and {int(PREDICTION_HARD_CONTACT_EV)}+ mph) "
+                f"vs D1 baseline (~{int(PREDICTION_EV_TYPICAL_MIN)}-{int(PREDICTION_EV_TYPICAL_MAX)} mph). "
+                "Be selective with location."
+            ),
+        }
     else:
         out["caution"] = {"pitch": "—", "coach_blurb": "Not enough hard contact data to flag a caution pitch."}
 
@@ -1051,8 +1489,6 @@ def format_prediction_table_display(pred: pd.DataFrame, summary: dict) -> pd.Dat
         "Recommendation": recs,
     })
 
-
-
 def get_pitcher_team_logo_text(team_code: str) -> str:
     if team_code == PURDUE_CODE:
         return "P"
@@ -1083,7 +1519,6 @@ def _compute_freshness_stats(rows):
 
 FRESHNESS_STATS = _compute_freshness_stats(csv_paths_with_dates)
 
-
 def _build_master_df_from_csvs():
     """Read every Trackman + Rapsodo CSV and concatenate. Slow path."""
     dfs = []
@@ -1102,7 +1537,6 @@ def _build_master_df_from_csvs():
         df["DateOnly"] = df["Date"].dt.date
         df["DataSource"] = "trackman"
         df = infer_session_type_for_purdue(df, filename=rel)
-
         dfs.append(df)
 
     # Load Rapsodo data
@@ -1133,7 +1567,6 @@ def _build_master_df_from_csvs():
 
     return master
 
-
 # ---------------------------------------------------------------------------
 # MASTER_DF pickle cache — avoids re-parsing every CSV on each server restart.
 # Invalidates when any data folder's modification time changes (files added /
@@ -1156,7 +1589,6 @@ def _dir_mtime(path):
     except Exception:
         return 0
 
-
 def _master_fingerprint():
     """Signature that invalidates cache when any source folder changes."""
     return {
@@ -1164,7 +1596,6 @@ def _master_fingerprint():
         "rapsodo": _dir_mtime(os.path.join(APP_DIR, "data", "rapsodo")),
         "version": 1,  # bump if schema changes
     }
-
 
 def build_master_df():
     """Load MASTER_DF from pickle cache when possible; rebuild from CSVs otherwise."""
@@ -1240,6 +1671,12 @@ def get_initial_date_range(default_season):
     return start, end
 
 _date_start_value, _date_end_value = get_initial_date_range(DEFAULT_SEASON)
+INITIAL_SEASON_SELECTION = DEFAULT_SEASON
+if _date_start_value is None or _date_end_value is None:
+    # If the default season has no overlap with loaded CSV dates,
+    # fall back to "all" so date inputs remain interactive.
+    INITIAL_SEASON_SELECTION = "all"
+    _date_start_value, _date_end_value = get_initial_date_range("all")
 
 
 # ---------------------------------------------------------------------------
@@ -1250,7 +1687,727 @@ app_ui = ui.page_fluid(
     ui.tags.head(
         ui.tags.script(src="https://cdn.plot.ly/plotly-2.35.2.min.js"),
     ),
-    ui.tags.link(rel="stylesheet", href="dashboard.css"),
+    ui.tags.style("""
+        html, body {
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+            font-family: Arial, sans-serif;
+            background-color: #f3f3f3;
+        }
+
+        .container-fluid {
+            width: 100% !important;
+            max-width: 100% !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+        }
+
+        .top-header {
+            width: 100%;
+            margin: 0;
+            min-width: 100%;
+            background-color: #000000;
+            border-bottom: 6px solid #DDB945;
+            box-sizing: border-box;
+        }
+
+        .sidebar .shiny-input-container,
+        .sidebar .filter-title {
+            font-weight: 900 !important;
+        }
+
+        .sidebar .shiny-input-container .form-check label.form-check-label {
+            font-weight: 400 !important;
+        }
+
+        .top-header {
+            width: 100%;
+            margin: 0;
+            min-width: 100%;
+            background-color: #000000;
+            border-bottom: 6px solid #DDB945;
+            box-sizing: border-box;
+        }
+
+        .header-inner {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            align-items: center;
+            padding: 8px 20px;
+            box-sizing: border-box;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding-left: 18px;
+            box-sizing: border-box;
+        }
+
+        .header-left img {
+            height: 40px;
+            width: auto;
+            display: block;
+        }
+
+        .header-title {
+            text-align: center;
+            color: #DDB945;
+            font-size: 46px;
+            font-weight: 900;
+            letter-spacing: 0.5px;
+            box-sizing: border-box;
+        }
+
+        .header-right {
+            display: none;
+        }
+
+        .layout-main {
+            display: flex;
+            width: 100%;
+            min-height: calc(100vh - 64px);
+        }
+
+        .sidebar {
+            width: 260px;
+            background-color: #ffffff;
+            border-right: 1px solid #d6d6d6;
+            padding: 16px 16px 20px 16px;
+            box-sizing: border-box;
+        }
+
+        .sidebar h4 {
+            margin: 0 0 12px 0;
+            font-size: 24px;
+            font-weight: 900;
+            text-align: center;
+        }
+
+        .main-area {
+            flex: 1;
+            padding: 16px 20px 22px 20px;
+            box-sizing: border-box;
+            overflow-x: auto;
+        }
+
+        .tabs-wrap .nav-tabs {
+            border-bottom: 1px solid #d6d6d6;
+            background: #ffffff;
+            padding: 8px 10px 0 10px;
+            border-radius: 10px 10px 0 0;
+        }
+
+        .tabs-wrap .nav-tabs .nav-link {
+            border: none;
+            color: #111111;
+            font-weight: 900;
+            padding: 10px 18px;
+            margin-right: 10px;
+            background: transparent;
+        }
+
+        .tabs-wrap .nav-tabs .nav-link.active {
+            color: #111111;
+            position: relative;
+        }
+
+        .tabs-wrap .nav-tabs .nav-link.active::after {
+            content: "";
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            bottom: -1px;
+            height: 3px;
+            background: #DDB945;
+        }
+
+        .panel {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            padding: 16px 16px 18px 16px;
+            min-height: calc(100vh - 140px);
+            overflow-y: auto;
+            overflow-x: visible;
+            height: auto;
+        }
+
+        .profile-title {
+            font-size: 24px;
+            font-weight: 900;
+            margin: 0 0 10px 0;
+            text-align: center;
+        }
+
+        .player-summary {
+            font-size: 20px;
+            font-weight: 800;
+            color: #333333;
+            margin: 0 0 14px 0;
+            text-align: center;
+        }
+
+        .grid-2x2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .card {
+            background: #f7f7f7;
+            border: 1px solid #d6d6d6;
+            border-radius: 10px;
+            padding: 10px;
+            overflow: visible;
+        }
+
+        .card-fixed {
+            min-height: 420px;
+        }
+
+        .legend-row{
+            display:flex;
+            flex-wrap:wrap;
+            gap:14px;
+            justify-content:center;
+            align-items:center;
+            margin: 8px 0 14px 0;
+            padding: 8px 14px;
+            border: 1px solid rgba(0,0,0,0.15);
+            border-radius: 8px;
+            background: #fff;
+            font-size: 13px;
+        }
+
+        /* Date range labelless */
+        .date-range-row label {
+            display: none !important;
+        }
+
+        /* Chart expand modal */
+        .expand-btn {
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            cursor: pointer;
+            font-size: 16px;
+            color: #999;
+            padding: 2px 5px;
+            border-radius: 4px;
+            transition: color 0.15s, background 0.15s;
+            z-index: 10;
+            line-height: 1;
+        }
+        .expand-btn:hover {
+            color: #333;
+            background: rgba(0,0,0,0.06);
+        }
+        .chart-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 99998;
+            justify-content: center;
+            align-items: center;
+        }
+        .chart-modal-overlay.active {
+            display: flex;
+        }
+        .chart-modal-content {
+            background: #fff;
+            border-radius: 12px;
+            width: 92vw;
+            height: 90vh;
+            max-width: 1400px;
+            position: relative;
+            overflow: hidden;
+            padding: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+        .chart-modal-close {
+            position: absolute;
+            top: 12px; right: 16px;
+            font-size: 24px;
+            color: #666;
+            cursor: pointer;
+            z-index: 10;
+            line-height: 1;
+        }
+        .chart-modal-close:hover {
+            color: #000;
+        }
+        .chart-modal-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 12px;
+        }
+
+        /* Stat header tooltip icon */
+        .stat-tip {
+            cursor: help;
+        }
+        .stat-tip .tip-icon {
+            display: inline-block;
+            width: 13px; height: 13px;
+            border-radius: 50%;
+            background: rgba(205,167,53,0.3);
+            color: #CDA735;
+            font-size: 9px; font-weight: 700;
+            line-height: 13px; text-align: center;
+            margin-left: 3px; vertical-align: middle;
+        }
+        /* Floating tooltip (appended to body) */
+        .stat-tip-popup {
+            position: fixed;
+            background: #2d2d2d; color: #f0f0f0;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 11px; font-weight: 400;
+            line-height: 1.5; width: 220px;
+            text-align: left; z-index: 99999;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+            white-space: normal;
+            pointer-events: none;
+        }
+        .stat-tip-popup::before {
+            content: '';
+            position: absolute; top: -6px;
+            left: 50%; transform: translateX(-50%);
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 6px solid #2d2d2d;
+        }
+        .stat-tip-popup .tip-title {
+            font-weight: 700; font-size: 12px;
+            color: #CDA735; margin-bottom: 4px;
+        }
+        .stat-tip-popup .tip-scale {
+            margin-top: 6px; font-size: 10px; color: #aaa;
+        }
+
+        .usage-table-wrap {
+            width: 100%;
+            max-width: 100%;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            display: block;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 6px;
+        }
+
+        .usage-table-wrap > div,
+        .usage-table-wrap .table-responsive,
+        .usage-table-wrap .dataframe_container {
+            display: block;
+            width: 100%;
+        }
+
+        .usage-table-wrap table,
+        .usage-table-wrap .dataframe {
+            width: 100% !important;
+            min-width: 100% !important;
+            border-collapse: collapse !important;
+            table-layout: auto !important;
+            white-space: nowrap;
+        }
+
+        /* Header */
+        .usage-table-wrap thead th {
+            background: #111 !important;
+            color: #fff !important;
+            font-weight: 800 !important;
+            border: 1px solid #444 !important;
+        }
+
+        /* Body cells */
+        .usage-table-wrap tbody td {
+            border: 1px solid #cfcfcf !important;
+            color: #111 !important;
+        }
+
+        /* Zebra striping */
+        .usage-table-wrap tbody tr:nth-child(odd) td {
+            background: #f3f3f3 !important;
+        }
+
+        .usage-table-wrap tbody tr:nth-child(even) td {
+            background: #ffffff !important;
+        }
+
+        /* Cell formatting */
+        .usage-table-wrap th,
+        .usage-table-wrap td {
+            padding: 4px 6px;
+            font-size: 12px;
+            text-align: right;
+        }
+
+        /* First column */
+        .usage-table-wrap th:first-child,
+        .usage-table-wrap td:first-child {
+            text-align: left;
+            min-width: 140px;
+            padding-right: 6px;
+        }
+
+        /* All other columns */
+        .usage-table-wrap th:not(:first-child),
+        .usage-table-wrap td:not(:first-child) {
+            text-align: right;
+            min-width: 88px;
+        }
+
+        /* Slightly wider metrics */
+        .usage-table-wrap th:nth-child(7),
+        .usage-table-wrap td:nth-child(7),
+        .usage-table-wrap th:nth-child(8),
+        .usage-table-wrap td:nth-child(8),
+        .usage-table-wrap th:nth-child(9),
+        .usage-table-wrap td:nth-child(9),
+        .usage-table-wrap th:nth-child(10),
+        .usage-table-wrap td:nth-child(10) {
+            min-width: 95px;
+        }
+
+        /* Prediction tab table: slightly larger readability */
+        .prediction-table-wrap th,
+        .prediction-table-wrap td {
+            font-size: 13px;
+        }
+
+        .table-title {
+            font-size: 16px;
+            font-weight: 900;
+            margin: 6px 0 10px 0;
+            text-align: center;
+        }
+
+        /* ---------------- Comparison tab ---------------- */
+        .cmp-filter-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+            align-items: end;
+            max-width: 1500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .cmp-filter-row .shiny-input-container {
+            margin-bottom: 0 !important;
+        }
+
+        .cmp-filter-row .shiny-input-container > label {
+            margin-bottom: 6px;
+            font-weight: 800;
+        }
+
+        .cmp-vs-title {
+            font-size: 26px;
+            font-weight: 900;
+            text-align: center;
+            margin: 6px 0 16px 0;
+            color: #222222;
+        }
+
+        .cmp-summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+
+        .cmp-card {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 12px;
+            padding: 16px 18px;
+        }
+
+        .cmp-card-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .cmp-card-logo {
+            width: 54px;
+            height: 54px;
+            min-width: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            background: #f7f7f7;
+            border: 1px solid #ececec;
+            font-size: 24px;
+            font-weight: 900;
+            color: #DDB945;
+        }
+
+        .cmp-card-name {
+            font-size: 18px;
+            font-weight: 900;
+            margin: 0;
+            color: #222222;
+        }
+
+        .cmp-card-subtitle {
+            font-size: 13px;
+            color: #666666;
+            margin-top: 2px;
+        }
+
+        .cmp-chip-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 10px 0 14px 0;
+        }
+
+        .cmp-chip {
+            background: #f3f3f3;
+            border: 1px solid #e0e0e0;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #333333;
+        }
+
+        .cmp-stat-strip {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            gap: 0;
+            background: #f7f7f7;
+            border: 1px solid #e1e1e1;
+            border-radius: 12px;
+        }
+
+        .cmp-stat-box {
+            padding: 12px 10px;
+            text-align: center;
+            border-right: 1px solid #e1e1e1;
+        }
+
+        .cmp-stat-box:last-child {
+            border-right: none;
+        }
+
+        .cmp-stat-label {
+            font-size: 13px;
+            color: #666666;
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+
+        .cmp-stat-value {
+            font-size: 18px;
+            font-weight: 900;
+            color: #222222;
+        }
+
+        .cmp-table-card {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 14px;
+        }
+
+        .cmp-grid-bottom {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .cmp-plot-card {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 12px;
+            padding: 10px;
+        }
+
+        .cmp-section-title {
+            font-size: 16px;
+            font-weight: 900;
+            color: #222222;
+            margin: 0 0 10px 4px;
+            letter-spacing: 0.2px;
+        }
+
+        .cmp-table-wrap table,
+        .cmp-table-wrap thead,
+        .cmp-table-wrap tbody,
+        .cmp-table-wrap tr,
+        .cmp-table-wrap th,
+        .cmp-table-wrap td,
+        .cmp-table-wrap table.table,
+        .cmp-table-wrap .table,
+        .cmp-table-wrap .table > :not(caption) > * > * {
+            background-color: transparent !important;
+        }
+
+        .cmp-table-wrap table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
+        }
+
+        .cmp-table-wrap table.table thead th,
+        .cmp-table-wrap .table thead th {
+            background: #111 !important;
+            color: #fff !important;
+            font-weight: 800 !important;
+            border: 1px solid #444 !important;
+            border-bottom: 2px solid #444 !important;
+            text-align: center !important;
+            white-space: normal !important;
+            line-height: 1.2 !important;
+        }
+
+        .cmp-table-wrap tbody td {
+            border: 1px solid #cfcfcf !important;
+            color: #111 !important;
+            font-size: 13px !important;
+            padding: 8px 8px !important;
+        }
+
+        .cmp-table-wrap tbody tr:nth-child(odd) td {
+            background: #f7f7f7 !important;
+        }
+
+        .cmp-table-wrap tbody tr:nth-child(even) td {
+            background: #ffffff !important;
+        }
+
+        .cmp-table-wrap th:nth-child(1),
+        .cmp-table-wrap td:nth-child(1) {
+            text-align: left !important;
+            width: 34%;
+        }
+
+        .cmp-table-wrap th:nth-child(2),
+        .cmp-table-wrap td:nth-child(2),
+        .cmp-table-wrap th:nth-child(3),
+        .cmp-table-wrap td:nth-child(3) {
+            text-align: center !important;
+            width: 33%;
+        }
+
+        /* ---------------- Team summary table ---------------- */
+        .team-summary-wrap{
+            margin-top: 14px;
+            margin-bottom: 18px;
+            background: #ffffff;
+            border: 1px solid #d9d9d9;
+            border-radius: 10px;
+            overflow: auto;
+            height: auto;
+        }
+
+        .team-summary-title{
+            font-size: 20px;
+            font-weight: 700;
+            text-align: center;
+            padding: 10px 12px;
+            background: #f7f7f7;
+            border-bottom: 1px solid #d9d9d9;
+            color: #111111;
+        }
+
+        .team-summary-table{
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .team-summary-table th,
+        .team-summary-table td{
+            border: 1px solid #d9d9d9;
+            padding: 10px 12px;
+            text-align: center;
+            font-size: 16px;
+        }
+
+        .team-summary-table th{
+            font-weight: 700;
+            background: #f3f3f3;
+            white-space: nowrap;
+        }
+
+        .team-summary-table th:first-child,
+        .team-summary-table td:first-child{
+            text-align: left;
+            font-weight: 700;
+            width: 140px;
+        }
+
+        .team-summary-table th:nth-child(2){width: 140px;}
+        .team-summary-table th:nth-child(3){width: 140px;}
+        .team-summary-table th:nth-child(4){width: 140px;}
+        .team-summary-table th:nth-child(5){width: 140px;}
+
+        .team-summary-purdue{
+            background: #f8f5e6 !important;
+        }
+
+        .team-summary-opponent{
+            background: #f8f8f8 !important;
+        }
+
+        /* ---- Batter profile ---- */
+        .bat-line-wrap {
+            background: #ffffff;
+            border: 1px solid #d6d6d6;
+            border-radius: 10px;
+            overflow-x: auto;
+            margin-bottom: 14px;
+        }
+        .bat-line-wrap table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            min-width: 600px;
+        }
+        .bat-line-wrap thead th {
+            background: #111111 !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            font-weight: 800 !important;
+            text-align: center !important;
+            padding: 8px 4px !important;
+            border: 1px solid #333 !important;
+        }
+        .bat-line-wrap tbody td {
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+            padding: 10px 4px;
+            border: 1px solid #e0e0e0;
+            color: #111111;
+        }
+        .bat-line-wrap tbody td.bat-hl   { color: #185FA5; }
+        .bat-line-wrap tbody td.bat-good { color: #0F6E56; }
+        .bat-line-wrap tbody td.bat-warn { color: #854F0B; }
+        .bat-line-wrap tbody tr:nth-child(odd) td  { background: #f7f7f7; }
+        .bat-line-wrap tbody tr:nth-child(even) td { background: #ffffff; }
+
+        
+    """),
 
     # Purdue header (logo left, title centered)
     ui.tags.div(
@@ -1327,7 +2484,7 @@ app_ui = ui.page_fluid(
                         "custom": "Custom Date Range",
                     },
                     
-                    selected=DEFAULT_SEASON,
+                    selected=INITIAL_SEASON_SELECTION,
                 ),
             ),
 
@@ -1638,16 +2795,18 @@ def server(input, output, session):
             return
         if start is None or end is None:
             return
+        if start > end:
+            return
 
         ui.update_date(
             "date_start",
             min=global_date_min,
-            max=end,
+            max=min(end, global_date_max),
             session=session,
         )
         ui.update_date(
             "date_end",
-            min=start,
+            min=max(start, global_date_min),
             max=global_date_max,
             session=session,
         )
@@ -1994,7 +3153,7 @@ def server(input, output, session):
     @reactive.calc
     def batter_pitch_colors():
         data = batter_data()
-        if data is None or data.empty or PITCH_TYPE_COL not in data.columns:
+        if data is   None or data.empty or PITCH_TYPE_COL not in data.columns:
             return {}
         return build_pitch_color_map(data[PITCH_TYPE_COL].dropna().unique())
 
@@ -2261,6 +3420,15 @@ def server(input, output, session):
     # -----------------------------------------------------------------------
     # Prediction tab reactives
     # -----------------------------------------------------------------------
+    @reactive.effect
+    @reactive.event(input.retrain_prediction_models)
+    def _retrain_prediction_models():
+        prediction_pipeline.clear_prediction_cache(remove_disk=True)
+        ui.notification_show(
+            "Prediction models cache cleared. Models will retrain on next prediction refresh.",
+            type="message",
+            duration=4,
+        )
     @reactive.calc
     def prediction_df():
         data = pitcher_data()
@@ -2336,24 +3504,24 @@ def server(input, output, session):
 
         def _short_explainer(key):
             if key == "best_strike":
-                return "Consistently lands in the zone."
+                return "Consistently lands in the zone and supports repeatable strike execution."
             if key == "best_putaway":
-                return "Generates swings and misses late in counts."
-            return "Gets hit hard more often when left over the plate."
+                return "Creates swing-and-miss outcomes in two-strike development situations."
+            return "Shows elevated hard-contact risk when location misses over the plate."
 
         def _takeaway(key):
             if key == "best_strike":
-                return "Most reliable pitch to get ahead in the count"
+                return "Most reliable pitch for building ahead-in-count execution"
             if key == "best_putaway":
-                return "Best swing-and-miss pitch in two-strike situations"
-            return "Most likely to get hit hard if mislocated"
+                return "Best swing-and-miss profile for two-strike progression work"
+            return "Primary damage-risk pitch to target in development plans"
 
         def _when_to_use(key):
             if key == "best_strike":
-                return ["Early counts (0-0, 1-0)", "When you need a strike"]
+                return ["Build early-count strike consistency (0-0, 1-0)", "Progression goal: repeat competitive strikes under pressure"]
             if key == "best_putaway":
-                return ["Two-strike counts", "After showing fastball"]
-            return ["Use carefully in hitter's counts", "Avoid middle-middle location"]
+                return ["Develop two-strike finish patterns", "Sequence after establishing velocity/shape contrast"]
+            return ["Reduce usage in hitter-friendly counts during development blocks", "Prioritize command targets that avoid middle-middle misses"]
 
         def _card_theme(key):
             if key == "best_strike":
@@ -2379,7 +3547,7 @@ def server(input, output, session):
                         style="font-size:15px;color:#222;margin-bottom:8px;",
                     ),
                     ui.div(_short_explainer(key), style="font-size:14px;color:#222;line-height:1.35;"),
-                    ui.div("When to use:", style="font-size:13px;font-weight:900;color:#111;margin-top:10px;"),
+                    ui.div("Player development focus:", style="font-size:13px;font-weight:900;color:#111;margin-top:10px;"),
                     ui.tags.ul(
                         ui.tags.li(bullets[0], style="font-size:13px;color:#222;"),
                         ui.tags.li(bullets[1], style="font-size:13px;color:#222;"),
@@ -2388,7 +3556,7 @@ def server(input, output, session):
                     warn_ui,
                 )
             else:
-                body = ui.div("Historical summary only (ML unavailable).", style="font-size:14px;color:#666;")
+                body = ui.div("Historical profile summary only (ML unavailable).", style="font-size:14px;color:#666;")
 
             return ui.div(
                 ui.div(title, style=f"font-size:14px;font-weight:900;letter-spacing:0.04em;color:{border_color};margin-bottom:8px;"),
@@ -2400,11 +3568,11 @@ def server(input, output, session):
         putaway_pitch = ((summ.get("best_putaway") or {}).get("pitch") or "this pitch")
         caution_pitch = ((summ.get("caution") or {}).get("pitch") or "this pitch")
         strategy_ui = ui.div(
-            ui.div("Pitching Strategy Summary:", style="font-size:15px;font-weight:900;color:#111;margin-bottom:4px;"),
+            ui.div("Pitching Development Summary:", style="font-size:15px;font-weight:900;color:#111;margin-bottom:4px;"),
             ui.div(
-                f"This pitcher leans on the {str(strike_pitch).lower()} for control, "
-                f"uses the {str(putaway_pitch).lower()} as the put-away pitch, "
-                f"and should be cautious with the {str(caution_pitch).lower()} when behind in the count.",
+                f"This pitcher currently profiles with the {str(strike_pitch).lower()} as the strongest strike-control option, "
+                f"the {str(putaway_pitch).lower()} as the top two-strike finisher, "
+                f"and the {str(caution_pitch).lower()} as the key damage-risk area to address when behind in the count.",
                 style="font-size:15px;color:#222;line-height:1.4;",
             ),
             style="padding:10px 12px;border:1px solid #d9d9d9;border-left:5px solid #111;border-radius:8px;background:#fcfcfc;margin-bottom:10px;",
@@ -2413,10 +3581,10 @@ def server(input, output, session):
         train_note = (st.get("training_note") or "").strip()
         train_ui = ui.div(train_note, style="font-size:12px;color:#666;font-style:italic;margin-bottom:6px;") if (use_ml and train_note) else None
         met_note = (st.get("metrics_note") or "").strip()
-        met_ui = ui.div(f"Validation: {met_note}", style="font-size:11px;color:#777;margin-bottom:6px;") if (use_ml and met_note) else None
+        met_ui = ui.div(f"Model validation: {met_note}", style="font-size:11px;color:#777;margin-bottom:6px;") if (use_ml and met_note) else None
         warn_note = (st.get("warning_note") or "").strip()
         warn_ui = ui.div(
-            f"Estimate note: {warn_note}",
+            f"Model estimate note: {warn_note}",
             style="font-size:12px;color:#854F0B;font-weight:700;margin-bottom:8px;",
         ) if (use_ml and warn_note) else None
         fb_ui = ui.div(fallback_note, style="font-size:14px;color:#854F0B;font-weight:700;margin-bottom:12px;") if (not use_ml and fallback_note) else None
@@ -2427,21 +3595,31 @@ def server(input, output, session):
                 ui.tags.summary("Advanced Metrics"),
                 ui.div(
                     ui.tags.p(
-                        "Model detail view: shows how each pitch profile shifts expected outcomes versus league-average baseline.",
+                        "This view shows how each pitch performs across three areas: getting strikes (control), finishing hitters (put-away), and limiting hard contact (risk).",
                         style="font-size:13px;color:#666;margin:8px 0 4px 0;",
                     ),
                     ui.tags.p(
-                        ui.tags.span("Green/right", style="color:#166534;font-weight:800;"),
-                        " = increases the outcome | ",
-                        ui.tags.span("Red/left", style="color:#991b1b;font-weight:800;"),
-                        " = decreases the outcome | Values are directional effects, not raw probabilities.",
-                        style="font-size:12px;color:#555;margin:0 0 8px 0;",
+                        ui.tags.span("Impact key:", style="font-weight:900;color:#111;"),
+                        " ",
+                        ui.tags.span("Right (green)", style="color:#166534;font-weight:900;"),
+                        " = helps that outcome | ",
+                        ui.tags.span("Left", style="font-weight:900;color:#111;"),
+                        " = hurts that outcome | ",
+                        ui.tags.span(
+                            "For hard-contact risk: lower (left) = safer, higher (right) = more damage risk.",
+                            style="font-weight:900;color:#7f1d1d;",
+                        ),
+                        style="font-size:12px;color:#555;margin:0 0 6px 0;",
+                    ),
+                    ui.tags.p(
+                        "Bars to the right show stronger impact. For hard-contact risk, lower values (left) are better because they mean less damage.",
+                        style="font-size:12px;color:#555;margin:0 0 8px 0;font-weight:700;",
                     ),
                     ui.output_ui("prediction_advanced_impacts_ui"),
                     ui.output_ui("prediction_model_drivers_ui"),
                     ui.output_table("prediction_advanced_table"),
                     ui.tags.p(
-                        "Use these values to compare relative strengths across this pitcher's options. Treat small gaps as equivalent tiers; prioritize cards and game context for final pitch calling.",
+                        "Use these values to compare relative strengths across this pitcher's options and prioritize development goals. Treat small gaps as equivalent tiers; pair these rankings with game context, sequencing plans, and player-development priorities.",
                         style="font-size:12px;color:#555;margin:8px 0 4px 0;",
                     ),
                 ),
@@ -2451,9 +3629,9 @@ def server(input, output, session):
         return ui.div(
             strategy_ui, train_ui, met_ui, warn_ui, fb_ui,
             ui.div(
-                _card("Best strike / command pitch", "best_strike"),
-                _card("Best put-away option", "best_putaway"),
-                _card("Highest damage-risk pitch", "caution"),
+                _card("Best strike / command development pitch", "best_strike"),
+                _card("Best two-strike development option", "best_putaway"),
+                _card("Highest damage-risk pitch to address", "caution"),
                 style="display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;",
             ),
             advanced_ui,
@@ -2467,10 +3645,10 @@ def server(input, output, session):
         if input.player_type() != "pitcher" or input.data_source() not in ("trackman",):
             return ui.div()
         return ui.div(
-            ui.div("Summary by Pitch Type", style=(
-                "font-size:16px;font-weight:900;margin:18px 0 10px 0;text-align:center;"
+            ui.div("Summary by pitch type", style=(
+                "font-size:17px;font-weight:900;margin:18px 0 10px 0;text-align:center;"
             )),
-            ui.div(ui.output_table("prediction_table"), class_="usage-table-wrap"),
+            ui.div(ui.output_table("prediction_table"), class_="usage-table-wrap prediction-table-wrap"),
         )
 
     @output
@@ -2536,10 +3714,10 @@ def server(input, output, session):
             sval = _fmt_signed(adf.loc[idx, metric_col])
             if has_low_stability:
                 if high_is_risk:
-                    return f"{pitch}: leans toward higher {metric_label.lower()} ({sval})"
+                    return f"{pitch}: leans toward higher {metric_label.lower()} (less safe) ({sval})"
                 return f"{pitch}: leans toward stronger {metric_label.lower()} ({sval})"
             if high_is_risk:
-                return f"{pitch}: highest {metric_label.lower()} ({sval})"
+                return f"{pitch}: highest {metric_label.lower()} (more likely to give up hard contact) ({sval})"
             return f"{pitch}: strongest {metric_label.lower()} ({sval})"
 
         chip_style = (
@@ -2547,15 +3725,15 @@ def server(input, output, session):
             "border:1px solid #d5d5d5;border-radius:999px;background:#fff;font-size:12px;color:#222;"
         )
         chips = ui.div(
-            ui.tags.span(_chip_text("attack_score", "control impact"), style=chip_style),
-            ui.tags.span(_chip_text("putaway_score", "two-strike put-away impact"), style=chip_style),
-            ui.tags.span(_chip_text("danger_score", "hard-contact risk impact", high_is_risk=True), style=chip_style),
+            ui.tags.span(_chip_text("attack_score", "strike reliability"), style=chip_style),
+            ui.tags.span(_chip_text("putaway_score", "put-away value"), style=chip_style),
+            ui.tags.span(_chip_text("danger_score", "hard-contact risk", high_is_risk=True), style=chip_style),
             style="margin:4px 0 10px 0;",
         )
         low_sample_badge = ui.div()
         if has_low_stability:
             low_sample_badge = ui.div(
-                "Low sample: directional only.",
+                "Low sample: trend only.",
                 style=(
                     "display:inline-block;margin:0 0 10px 0;padding:5px 9px;"
                     "border-radius:999px;border:1px solid #f0b429;background:#fff7e6;"
@@ -2563,7 +3741,13 @@ def server(input, output, session):
                 ),
             )
 
-        def _impact_row(metric_label, value, positive_color, negative_color):
+        metric_help = {
+            "Strike reliability": "Positive is favorable: better strike consistency than baseline.",
+            "Put-away value": "Positive is favorable: better two-strike swing-and-miss profile.",
+            "Hard-contact risk": "Lower is better (less hard contact allowed).",
+        }
+
+        def _impact_row(metric_label, value, positive_color, negative_color, is_risk=False):
             try:
                 fv = float(value)
             except Exception:
@@ -2576,13 +3760,29 @@ def server(input, output, session):
                 left_w, right_w = width_pct, 0.0
                 left_bg, right_bg = negative_color, "transparent"
             return ui.div(
-                ui.div(metric_label, style="min-width:210px;font-size:12px;color:#333;font-weight:700;"),
+                ui.div(
+                    ui.div(
+                        ui.tags.span(metric_label, title=metric_help.get(metric_label, "")),
+                        style="font-size:12px;color:#333;font-weight:700;",
+                    ),
+                    ui.div(
+                        "Lower is better (less hard contact allowed)." if is_risk else "",
+                        style="font-size:11px;color:#666;margin-top:1px;",
+                    ),
+                    style="min-width:210px;",
+                ),
                 ui.div(
                     ui.div(
                         ui.div(style=f"position:absolute;left:{50-left_w}%;top:0;height:100%;width:{left_w}%;background:{left_bg};"),
                         ui.div(style=f"position:absolute;left:50%;top:0;height:100%;width:{right_w}%;background:{right_bg};"),
                         ui.div(style="position:absolute;left:50%;top:0;height:100%;width:2px;background:#666;transform:translateX(-1px);"),
                         style="position:relative;height:12px;background:#f1f1f1;border:1px solid #d0d0d0;border-radius:999px;overflow:hidden;",
+                    ),
+                    ui.div(
+                        ui.tags.span("Safer", style="font-size:10px;color:#166534;font-weight:800;"),
+                        ui.tags.span(" <-> ", style="font-size:10px;color:#777;"),
+                        ui.tags.span("More damage risk", style="font-size:10px;color:#991b1b;font-weight:800;"),
+                        style="margin-top:2px;display:flex;justify-content:space-between;" if is_risk else "display:none;",
                     ),
                     style="flex:1;min-width:200px;",
                 ),
@@ -2599,16 +3799,16 @@ def server(input, output, session):
             stability_note = ui.div()
             if is_low:
                 stability_note = ui.div(
-                    "Low sample: directional only.",
+                    "Low sample: trend only.",
                     style="font-size:11px;color:#8a5d00;font-weight:800;margin:3px 0 6px 0;",
                 )
             cards.append(
                 ui.div(
                     ui.div(pitch, style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;"),
                     stability_note,
-                    _impact_row("Control impact", row["attack_score"], "#86c59a", "#e59a9a"),
-                    _impact_row("Two-strike put-away impact", row["putaway_score"], "#86c59a", "#e59a9a"),
-                    _impact_row("Hard-contact risk impact", row["danger_score"], "#e59a9a", "#86c59a"),
+                    _impact_row("Strike reliability", row["attack_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Put-away value", row["putaway_score"], "#86c59a", "#e59a9a"),
+                    _impact_row("Hard-contact risk", row["danger_score"], "#fca5a5", "#86c59a", is_risk=True),
                     style=(
                         f"border:1px solid #e0e0e0;border-radius:8px;background:#fff;padding:8px 10px;"
                         f"margin-bottom:8px;opacity:{card_opacity};"
@@ -2647,12 +3847,12 @@ def server(input, output, session):
                     style="font-size:13px;font-weight:900;color:#111;margin-bottom:4px;",
                 ),
                 ui.div(
-                    ui.tags.span("Upward drivers: ", style="font-weight:800;color:#166534;"),
+                    ui.tags.span("What's helping this pitch: ", style="font-weight:800;color:#166534;"),
                     ", ".join(pos[:2]),
                     style="font-size:12px;color:#222;margin-bottom:2px;",
                 ),
                 ui.div(
-                    ui.tags.span("Downward drivers: ", style="font-weight:800;color:#991b1b;"),
+                    ui.tags.span("What could hurt this pitch: ", style="font-weight:800;color:#991b1b;"),
                     ", ".join(neg[:2]),
                     style="font-size:12px;color:#222;margin-bottom:4px;",
                 ),
@@ -2664,18 +3864,18 @@ def server(input, output, session):
             )
 
         cards = [
-            _drivers_card("Best command", summ.get("best_strike")),
-            _drivers_card("Best put-away", summ.get("best_putaway")),
-            _drivers_card("Highest risk", summ.get("caution")),
+            _drivers_card("Top strike-control development pitch", summ.get("best_strike")),
+            _drivers_card("Top two-strike development pitch", summ.get("best_putaway")),
+            _drivers_card("Top damage-risk development priority", summ.get("caution")),
         ]
         cards = [c for c in cards if c is not None]
         if not cards:
             return ui.div()
 
         return ui.div(
-            ui.div("Model Drivers (SHAP)", style="font-size:14px;font-weight:900;color:#111;margin:10px 0 6px 0;"),
+            ui.div("Why each pitch grades this way", style="font-size:14px;font-weight:900;color:#111;margin:10px 0 6px 0;"),
             ui.div(
-                "SHAP drivers explain why model probabilities moved; impact bars show decision-score ranking.",
+                "This section highlights what is helping each pitch succeed and what could make it more vulnerable, using model-based signals translated for coaching decisions.",
                 style="font-size:12px;color:#555;margin:0 0 8px 0;",
             ),
             *cards,
@@ -2695,12 +3895,12 @@ def server(input, output, session):
         adf = adf.sort_values("composite_score", ascending=False, kind="mergesort")
         adf = adf[keep].rename(columns={
             PITCH_TYPE_COL: "Pitch",
-            "attack_score": "Control impact",
-            "putaway_score": "Two-strike put-away impact",
-            "danger_score": "Hard-contact risk impact",
-            "composite_score": "Overall profile impact",
+            "attack_score": "Strike reliability",
+            "putaway_score": "Put-away value",
+            "danger_score": "Hard-contact risk",
+            "composite_score": "Overall decision value",
         })
-        for c in ["Control impact", "Two-strike put-away impact", "Hard-contact risk impact", "Overall profile impact"]:
+        for c in ["Strike reliability", "Put-away value", "Hard-contact risk", "Overall decision value"]:
             if c in adf.columns:
                 adf[c] = adf[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "—")
         return adf
@@ -2714,7 +3914,6 @@ def server(input, output, session):
             type="message",
             duration=4,
         )
-
     # -----------------------------------------------------------------------
     # Comparison tab reactives
     # -----------------------------------------------------------------------
@@ -3157,15 +4356,13 @@ def server(input, output, session):
         return pur_df, opp_df, pur_name, opp_name, bid_pur, bid_opp
 
     def _cmp_prep_batter(df, bid):
-        """Filter + clean location data for one batter (catcher's view)."""
+        """Filter + clean location data for one batter."""
         if df is None or df.empty or not bid:
             return None
         d = df[df["BatterId"].astype(str) == str(bid)].copy()
         for c in ["PlateLocSide", "PlateLocHeight"]:
             if c in d.columns: d[c] = pd.to_numeric(d[c], errors="coerce")
         d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
-        # Flip to catcher's view to match the Home tab batter charts
-        d["PlateLocSide"] = -d["PlateLocSide"]
         if "PitchCall" not in d.columns: d["PitchCall"] = ""
         if "PlayResult" not in d.columns: d["PlayResult"] = ""
         return d if not d.empty else None
@@ -3306,13 +4503,12 @@ def server(input, output, session):
                 line=dict(color="black", width=2), fillcolor="rgba(0,0,0,0)",
                 row=1, col=col_idx,
             )
-            # Home plate — point faces UP toward the strike zone
-            hp_x = [-0.71, 0.71, 0.71, 0, -0.71]
-            hp_y = [0.95, 0.95, 1.15, 1.35, 1.15]
+            hp_x = [-0.35, -0.35, 0, 0.35, 0.35]
+            hp_y = [1.2, 1.0, 0.9, 1.0, 1.2]
             fig.add_trace(go.Scatter(
                 x=hp_x + [hp_x[0]], y=hp_y + [hp_y[0]],
-                mode="lines", fill="toself", fillcolor="rgba(255,255,255,0.9)",
-                line=dict(color="#222", width=1.5), showlegend=False, hoverinfo="skip",
+                mode="lines", fill="toself", fillcolor="rgba(255,255,255,0.8)",
+                line=dict(color="#555", width=1), showlegend=False, hoverinfo="skip",
             ), row=1, col=col_idx)
 
             if d is None:
@@ -4538,7 +5734,7 @@ def server(input, output, session):
                 ui.output_ui("cmp_summary_cards"),
                 ui.div(
                     ui.div("Location by Count", class_="team-summary-title"),
-                    ui.output_ui("cmp_count_location"),
+                    ui.output_plot("cmp_count_location", height="2600px"),
                     class_="team-summary-wrap",
                 ),
             )
@@ -6096,11 +7292,7 @@ def server(input, output, session):
 
     # ── helpers shared by both zone charts ─────────────────────────────────
     def _batter_zone_data():
-        """Filter batter data for the selected player + pitch type, with location.
-
-        Flips PlateLocSide so the chart displays in catcher's view (looking
-        out toward the pitcher), matching the standard scouting convention.
-        """
+        """Filter batter data for the selected player + pitch type, with location."""
         data = batter_data()
         bid = input.player() if input.player_type() == "batter" else None
         if data is None or data.empty or not bid:
@@ -6112,12 +7304,12 @@ def server(input, output, session):
         for c in ["PlateLocSide", "PlateLocHeight"]:
             d[c] = pd.to_numeric(d[c], errors="coerce")
         d = d.dropna(subset=["PlateLocSide", "PlateLocHeight"])
-        # Flip to catcher's view (industry standard for scouting)
-        d["PlateLocSide"] = -d["PlateLocSide"]
-        # Derive the vs-hand label from the filter selection so it always
-        # matches the sidebar (not from iloc[0] of PitcherThrows).
-        side_sel = str(input.batter_side()).lower()
-        pitcher_hand = {"right": "RHP", "left": "LHP"}.get(side_sel, "All")
+        pitcher_hand = ""
+        if "PitcherThrows" in d.columns:
+            pt = d["PitcherThrows"].dropna().astype(str).str.strip()
+            if not pt.empty:
+                val = pt.iloc[0].lower()
+                pitcher_hand = "RHP" if "right" in val else "LHP" if "left" in val else ""
         if "PitchCall" not in d.columns:
             d["PitchCall"] = ""
         if "PlayResult" not in d.columns:
@@ -6288,14 +7480,14 @@ def server(input, output, session):
                 x0=ZONE_LEFT, y0=ZONE_BOTTOM, x1=ZONE_RIGHT, y1=ZONE_TOP,
                 line=dict(color="black", width=2), fillcolor="rgba(0,0,0,0)",
             )
-            # Home plate — point faces UP toward the strike zone (17" wide)
-            hp_x = [-0.71, 0.71, 0.71, 0, -0.71]
-            hp_y = [0.95, 0.95, 1.15, 1.35, 1.15]
+            # Home plate
+            hp_x = [-0.35, -0.35, 0, 0.35, 0.35]
+            hp_y = [1.2, 1.0, 0.9, 1.0, 1.2]
             fig.add_trace(go.Scatter(
                 x=hp_x + [hp_x[0]], y=hp_y + [hp_y[0]],
                 mode="lines", fill="toself",
-                fillcolor="rgba(255,255,255,0.9)",
-                line=dict(color="#222", width=1.5),
+                fillcolor="rgba(255,255,255,0.8)",
+                line=dict(color="#555", width=1),
                 showlegend=False, hoverinfo="skip",
             ))
 
@@ -9008,6 +10200,5 @@ def server(input, output, session):
             game_date=game_date,
         )
         yield pdf_bytes
-
 
 app = App(app_ui, server, static_assets=STATIC_DIR)

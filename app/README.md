@@ -26,3 +26,11 @@ CSV files are loaded from the `v3` folder. Edit `V3_PATH` at the top of `app.py`
 1. **CSV file**: Choose a game/file from the dropdown (all `*.csv` under `v3` recursively).
 2. **Pitcher**: Choose a pitcher; the list updates when you change the CSV.
 3. The 2x2 dashboard shows: Pitch Usage % (pie), Pitch Locations, Usage Table, Pitch Movement.
+
+## Prediction Tab Documentation
+
+- See `docs/PREDICTION_TAB_GUIDE.md` for full details on:
+  - model/data pipeline
+  - recommendation scoring logic
+  - fallback behavior and stability guardrails
+  - how to interpret cards and summary table
