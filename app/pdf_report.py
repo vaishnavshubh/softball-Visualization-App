@@ -1,3 +1,4 @@
+
 """
 One-page landscape PDF reports for the Home tab.
 
@@ -124,7 +125,12 @@ def _fmt_num(v, digits: int = 1) -> str:
 # Header (black band + gold accent + logo + title + subtitle)
 # ---------------------------------------------------------------------------
 def _draw_header(fig, title: str, subtitle: str):
-    header_ax = fig.add_axes([0.0, 0.935, 1.0, 0.055])
+    # Black header spans from the very top of the page (y=1.0) down to the
+    # top of the gold accent bar (y=0.935). No white strip above.
+    header_top = 1.0
+    header_bot = 0.935
+    header_h   = header_top - header_bot  # 0.065
+    header_ax = fig.add_axes([0.0, header_bot, 1.0, header_h])
     header_ax.set_facecolor(PURDUE_BLACK)
     header_ax.set_xlim(0, 1)
     header_ax.set_ylim(0, 1)
@@ -134,29 +140,32 @@ def _draw_header(fig, title: str, subtitle: str):
         spine.set_visible(False)
 
     header_ax.text(
-        0.5, 0.74, title,
+        0.5, 0.64, title,
         ha="center", va="center",
         fontsize=20, fontweight="bold", color=PURDUE_GOLD,
         transform=header_ax.transAxes,
     )
     header_ax.text(
-        0.5, 0.18, subtitle,
+        0.5, 0.22, subtitle,
         ha="center", va="center",
         fontsize=11, color="#ffffff",
         transform=header_ax.transAxes,
     )
 
+    # Purdue logo on the left, vertically centered in the header.
     logo_path = os.path.join(STATIC_DIR, PURDUE_LOGO_FILENAME)
     if os.path.isfile(logo_path):
         try:
             logo = plt.imread(logo_path)
-            logo_ax = fig.add_axes([0.012, 0.944, 0.055, 0.045])
+            logo_h = 0.045
+            logo_y = header_bot + (header_h - logo_h) / 2
+            logo_ax = fig.add_axes([0.012, logo_y, 0.055, logo_h])
             logo_ax.imshow(logo)
             logo_ax.axis("off")
         except Exception:
             pass
 
-    # Gold accent bar
+    # Gold accent bar sits directly below the black header (no gap).
     accent_ax = fig.add_axes([0.0, 0.927, 1.0, 0.008])
     accent_ax.set_facecolor(PURDUE_GOLD)
     accent_ax.set_xticks([])
@@ -453,7 +462,7 @@ def _draw_centered_table(fig, df: pd.DataFrame, title: str, *,
 # ---------------------------------------------------------------------------
 # Pitcher report
 # ---------------------------------------------------------------------------
-def build_pitcher_pdf(
+def _build_pitcher_figure(
     pitcher_df: pd.DataFrame,
     usage_df: pd.DataFrame,
     summary_df: pd.DataFrame,
@@ -465,8 +474,8 @@ def build_pitcher_pdf(
     data_through: _date_type | None,
     opponent: str | None = None,
     game_date: _date_type | None = None,
-) -> bytes:
-    """Build the pitcher one-pager and return PDF bytes."""
+):
+    """Build the pitcher one-pager figure and return it (caller saves/closes)."""
     # Pitch types the pitcher actually throws (ordered by usage for the legend)
     if usage_df is not None and not usage_df.empty:
         thrown_types = usage_df[PITCH_TYPE_COL].tolist()
@@ -528,10 +537,51 @@ def build_pitcher_pdf(
         top=0.38, bottom=0.03, width=0.80,
     )
 
+    return fig
+
+
+def build_pitcher_pdf(
+    pitcher_df: pd.DataFrame,
+    usage_df: pd.DataFrame,
+    summary_df: pd.DataFrame,
+    *,
+    name: str,
+    hand: str,
+    side_label: str,
+    pitch_count: int,
+    data_through: _date_type | None,
+    opponent: str | None = None,
+    game_date: _date_type | None = None,
+) -> bytes:
+    """Build the pitcher one-pager and return PDF bytes (single page)."""
+    fig = _build_pitcher_figure(
+        pitcher_df, usage_df, summary_df,
+        name=name, hand=hand, side_label=side_label,
+        pitch_count=pitch_count, data_through=data_through,
+        opponent=opponent, game_date=game_date,
+    )
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
         pdf.savefig(fig, facecolor="white")
     plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def build_multi_pitcher_pdf(entries: list[dict]) -> bytes:
+    """Build a multi-page pitcher PDF — one page per dict in ``entries``.
+
+    Each entry is a keyword-argument mapping suitable for
+    :func:`_build_pitcher_figure` (``pitcher_df``, ``usage_df``,
+    ``summary_df``, ``name``, ``hand``, ``side_label``, ``pitch_count``,
+    ``data_through``, ``opponent``, ``game_date``).
+    """
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf:
+        for entry in entries:
+            fig = _build_pitcher_figure(**entry)
+            pdf.savefig(fig, facecolor="white")
+            plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
 
@@ -937,7 +987,7 @@ def _draw_plate_discipline_radar(ax, df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 # Batter report
 # ---------------------------------------------------------------------------
-def build_batter_pdf(
+def _build_batter_figure(
     batter_df: pd.DataFrame,
     batting_line_row: dict,
     pitch_breakdown_df: pd.DataFrame,
@@ -949,8 +999,8 @@ def build_batter_pdf(
     data_through: _date_type | None,
     opponent: str | None = None,
     game_date: _date_type | None = None,
-) -> bytes:
-    """Build the batter one-pager and return PDF bytes."""
+):
+    """Build the batter one-pager figure and return it (caller saves/closes)."""
     fig = plt.figure(figsize=LETTER_LANDSCAPE, facecolor="white")
 
     bits = [name]
@@ -998,9 +1048,43 @@ def build_batter_pdf(
     )
     _draw_plate_discipline_radar(rad_ax, batter_df)
 
+    return fig
+
+
+def build_batter_pdf(
+    batter_df: pd.DataFrame,
+    batting_line_row: dict,
+    pitch_breakdown_df: pd.DataFrame,
+    *,
+    name: str,
+    side: str,
+    hand_label: str,
+    pa: int,
+    data_through: _date_type | None,
+    opponent: str | None = None,
+    game_date: _date_type | None = None,
+) -> bytes:
+    """Build the batter one-pager and return PDF bytes (single page)."""
+    fig = _build_batter_figure(
+        batter_df, batting_line_row, pitch_breakdown_df,
+        name=name, side=side, hand_label=hand_label, pa=pa,
+        data_through=data_through, opponent=opponent, game_date=game_date,
+    )
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
         pdf.savefig(fig, facecolor="white")
     plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def build_multi_batter_pdf(entries: list[dict]) -> bytes:
+    """Build a multi-page batter PDF — one page per dict in ``entries``."""
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf:
+        for entry in entries:
+            fig = _build_batter_figure(**entry)
+            pdf.savefig(fig, facecolor="white")
+            plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
