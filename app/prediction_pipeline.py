@@ -458,6 +458,11 @@ def _fit_calibrated(X: pd.DataFrame, y: pd.Series, num_cols: list[str], cat_cols
     from sklearn.calibration import CalibratedClassifierCV
     from sklearn.metrics import average_precision_score, log_loss, roc_auc_score
     from sklearn.model_selection import train_test_split
+    try:
+        from sklearn.frozen import FrozenEstimator
+        _HAS_FROZEN = True
+    except ImportError:
+        _HAS_FROZEN = False
 
     y = pd.Series(y).astype(int)
     if y.nunique() < 2 or len(y) < ML_MIN_PER_CLASS * 2:
@@ -486,7 +491,10 @@ def _fit_calibrated(X: pd.DataFrame, y: pd.Series, num_cols: list[str], cat_cols
     except Exception as e:
         logger.debug("validation metrics skipped: %s", e)
 
-    cal = CalibratedClassifierCV(pipe, method="isotonic", cv="prefit")
+    if _HAS_FROZEN:
+        cal = CalibratedClassifierCV(FrozenEstimator(pipe), method="isotonic")
+    else:
+        cal = CalibratedClassifierCV(pipe, method="isotonic", cv="prefit")
     cal.fit(X_va, y_va)
     return cal, metrics
 
