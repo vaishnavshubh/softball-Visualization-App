@@ -1,2 +1,11 @@
 # Local Trackman v3 CSV tree (data loaded from BigQuery in production)
 app/data/v3/
+
+# Local environments and Python build artifacts
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# macOS metadata files
+.DS_Store
