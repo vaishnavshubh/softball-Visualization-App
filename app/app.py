@@ -11,8 +11,6 @@ Layout (matches sketch):
       2x2 grid: Usage pie, Location, Summary table, Movement
 """
 
-import glob
-import json
 import math
 import os
 import sys
@@ -27,6 +25,8 @@ from matplotlib.patches import Rectangle, Polygon, FancyBboxPatch, Ellipse
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
+from google.auth.exceptions import DefaultCredentialsError
+from google.cloud import bigquery
 from shiny import App, render, ui, reactive
 
 # ---------------------------------------------------------------------------
@@ -38,8 +38,25 @@ if APP_DIR not in sys.path:
 import prediction_pipeline  # noqa: E402  # league-wide ML for Prediction tab
 from constants import *  # noqa: E402, F401, F403  # static config / rosters / colors
 
-V3_PATH = os.path.join(APP_DIR, "data", "v3")
 STATIC_DIR = os.path.join(APP_DIR, "static")
+bq_client = None
+
+
+def _get_bq_client():
+    global bq_client
+    if bq_client is not None:
+        return bq_client
+    try:
+        bq_client = bigquery.Client(project="softball-493201")
+    except DefaultCredentialsError as e:
+        # In hosted runtimes (e.g., shinyapps.io), ADC may be absent.
+        # Keep app bootable and surface empty datasets instead of crashing.
+        print(f"BigQuery client unavailable: {e}")
+        bq_client = False
+    except Exception as e:
+        print(f"BigQuery client initialization error: {e}")
+        bq_client = False
+    return bq_client if bq_client is not False else None
 
 
 def is_purdue_team(team_value: str) -> bool:
@@ -181,142 +198,53 @@ def apply_session_filter_for_team(df, team, session_value):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _safe_mtime(path):
+def _query_to_df(sql: str) -> pd.DataFrame:
+    client = _get_bq_client()
+    if client is None:
+        return pd.DataFrame()
     try:
-        return os.path.getmtime(path)
-    except OSError:
-        return 0
-
-
-def _dedupe_trackman_paths(paths):
-    """Trackman publishes two versions of each game: an ``_unverified`` CSV
-    downloaded on game day, and a verified CSV published days later after
-    Trackman staff review. Both may sit under V3_PATH (often in different
-    date folders based on download date). This helper groups by filename
-    stem and keeps the verified file when it exists, falling back to the
-    unverified file so same-day games still appear in the dashboard.
-    """
-    groups = {}  # game_key -> {"verified": path, "unverified": path}
-    for full in paths:
-        base = os.path.basename(full)
-        stem, ext = os.path.splitext(base)
-        if ext.lower() != ".csv":
-            continue
-        if stem.endswith("_unverified"):
-            game_key = stem[: -len("_unverified")]
-            kind = "unverified"
-        else:
-            game_key = stem
-            kind = "verified"
-        bucket = groups.setdefault(game_key, {"verified": None, "unverified": None})
-        current = bucket[kind]
-        if current is None or _safe_mtime(full) > _safe_mtime(current):
-            bucket[kind] = full
-
-    # Prefer verified; fall back to unverified when no verified exists yet.
-    winners = [b["verified"] or b["unverified"] for b in groups.values()]
-    return sorted(p for p in winners if p)
-
-
-def get_csv_paths():
-    if not os.path.isdir(V3_PATH):
-        return []
-    pattern = os.path.join(V3_PATH, "**", "*.csv")
-    paths = sorted(glob.glob(pattern, recursive=True))
-    paths = _dedupe_trackman_paths(paths)
-    out = []
-    for p in paths:
-        try:
-            rel = os.path.relpath(p, V3_PATH)
-        except ValueError:
-            rel = os.path.basename(p)
-        out.append((rel, p))
-    return out
-
-def _data_dir_mtime():
-    if not os.path.isdir(V3_PATH):
-        return 0
-    try:
-        t = os.path.getmtime(V3_PATH)
-        for e in os.listdir(V3_PATH):
-            p = os.path.join(V3_PATH, e)
-            t = max(t, os.path.getmtime(p))
-        return t
+        return client.query(sql).to_dataframe(create_bqstorage_client=False)
     except Exception:
-        return 0
-
-def get_csv_paths_with_dates():
-    cache_path = os.path.join(APP_DIR, ".csv_metadata_cache.json")
-    v3_mtime = _data_dir_mtime()
-
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, "r") as f:
-                data = json.load(f)
-            if data.get("v3_path") == V3_PATH and data.get("mtime") == v3_mtime:
-                rows = []
-                gmin_s, gmax_s = data.get("global_min"), data.get("global_max")
-                gmin = date.fromisoformat(gmin_s) if gmin_s else None
-                gmax = date.fromisoformat(gmax_s) if gmax_s else None
-                for rel, full, dmin_s, dmax_s in data.get("rows", []):
-                    dmin = date.fromisoformat(dmin_s) if dmin_s else None
-                    dmax = date.fromisoformat(dmax_s) if dmax_s else None
-                    if dmin and dmax:
-                        rows.append((rel, full, dmin, dmax))
-                return rows, gmin, gmax
-        except Exception:
-            pass
-
-    rows = []
-    gmin, gmax = None, None
-    for rel, full in get_csv_paths():
-        try:
-            df = pd.read_csv(full, usecols=["Date"])
-        except Exception:
-            continue
-        if "Date" not in df.columns or df["Date"].empty:
-            continue
-        dates = pd.to_datetime(df["Date"], errors="coerce").dropna()
-        if dates.empty:
-            continue
-        dmin = dates.min().date()
-        dmax = dates.max().date()
-        rows.append((rel, full, dmin, dmax))
-        gmin = dmin if (gmin is None or dmin < gmin) else gmin
-        gmax = dmax if (gmax is None or dmax > gmax) else gmax
-
-    try:
-        cache_data = {
-            "v3_path": V3_PATH,
-            "mtime": v3_mtime,
-            "rows": [[rel, full, str(dmin), str(dmax)] for rel, full, dmin, dmax in rows],
-            "global_min": str(gmin) if gmin else None,
-            "global_max": str(gmax) if gmax else None,
-        }
-        with open(cache_path, "w") as f:
-            json.dump(cache_data, f)
-    except Exception:
-        pass
-
-    return rows, gmin, gmax
-
-# Map Purdue batter names → correct BatterIds (fix for Trackman placeholder IDs)
+        return pd.DataFrame()
 
 
-def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
-    try:
-        # Force ID columns to string so placeholder IDs don't get coerced to float
-        df = pd.read_csv(full_path, dtype={"BatterId": str, "PitcherId": str})
-    except Exception:
-        try:
-            df = pd.read_csv(full_path)
-        except Exception:
-            return None
+TRACKMAN_REQUIRED_ANALYTICS_COLS = {
+    "PitchNo",
+    "Date",
+    "Pitcher",
+    "PitcherId",
+    "PitchCall",
+    "TaggedPitchType",
+    "RelSpeed",
+    "PlateLocHeight",
+    "PlateLocSide",
+    "HorzBreak",
+    "InducedVertBreak",
+    "PlayResult",
+}
 
-    cols = [c for c in COLUMNS_TO_KEEP if c in df.columns]
-    if not cols:
-        return None
-    df = df[cols].copy()
+
+def _has_required_trackman_columns(df: pd.DataFrame) -> bool:
+    if df is None or df.empty:
+        return False
+    return TRACKMAN_REQUIRED_ANALYTICS_COLS.issubset(set(df.columns))
+
+
+# Map Purdue batter names -> correct BatterIds (fix for Trackman placeholder IDs)
+def clean_trackman_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # Normalize schema so downstream analytics can assume expected columns exist.
+    for c in COLUMNS_TO_KEEP:
+        if c not in df.columns:
+            df[c] = pd.NA
+
+    if "Date" not in df.columns:
+        return pd.DataFrame()
+    df = df[COLUMNS_TO_KEEP].copy()
 
     for c in [
         "Pitcher", "Batter", PITCH_TYPE_COL, "PitchCall",
@@ -324,6 +252,19 @@ def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
     ]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
+
+    # BigQuery staging tables often store metrics as STRING; coerce once here
+    # so downstream aggregations (means/max) don't fail on object dtype.
+    numeric_cols = [
+        "PitchNo", "PitchofPA", "Balls", "Strikes",
+        "RelSpeed", "SpinRate", "SpinAxis",
+        "InducedVertBreak", "HorzBreak",
+        "PlateLocHeight", "PlateLocSide",
+        "ExitSpeed", "Angle", "Direction",
+    ]
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # Fix batter IDs: replace placeholder/scientific-notation IDs
     if "BatterTeam" in df.columns and "Batter" in df.columns and "BatterId" in df.columns:
@@ -360,41 +301,54 @@ def load_and_clean_csv(full_path: str) -> pd.DataFrame | None:
                 return row["BatterId"]
             df.loc[non_purdue, "BatterId"] = df.loc[non_purdue].apply(_fix_other_bid, axis=1)
 
-    return df
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
+        df = df[df["Date"].notna()].copy()
+    if df.empty:
+        return pd.DataFrame()
+    df["DateOnly"] = df["Date"].dt.date
+    df["DataSource"] = "trackman"
+    # Keep existing classifier behavior; filename is no longer available from BQ.
+    df = infer_session_type_for_purdue(df, filename="")
+    return df.reset_index(drop=True)
 
 # ── Rapsodo CSV loader ────────────────────────────────────────────────────
 
 
-# Map Rapsodo Player IDs → Trackman PitcherIds
-
-def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
-    try:
-        # Find header row (has "No" and "Date")
-        with open(full_path) as fh:
-            lines = fh.readlines()
-        header_row = None
-        player_name = ""
-        player_id = ""
-        for i, line in enumerate(lines):
-            if '"Player Name:"' in line or 'Player Name:' in line:
-                player_name = line.split(",", 1)[1].strip().strip('"')
-            if '"Player ID:"' in line or 'Player ID:' in line:
-                player_id = line.split(",", 1)[1].strip().strip('"')
-            if '"No"' in line and '"Date"' in line:
-                header_row = i
-                break
-        if header_row is None:
-            return None
-
-        df = pd.read_csv(full_path, skiprows=header_row)
-    except Exception:
-        return None
-
+def clean_rapsodo_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
-        return None
+        return pd.DataFrame()
 
-    # Rename columns to Trackman names
-    df = df.rename(columns=RAPSODO_COL_MAP)
+    # BigQuery staging uses underscore-style headers; normalize to Trackman names.
+    rapsodo_bq_col_map = {
+        "Pitch_Type": "TaggedPitchType",
+        "Pitch Type": "TaggedPitchType",
+        "Is_Strike": "Is Strike",
+        "Strike_Zone_Side": "PlateLocSide",
+        "Strike Zone Side": "PlateLocSide",
+        "Strike_Zone_Height": "PlateLocHeight",
+        "Strike Zone Height": "PlateLocHeight",
+        "Velocity": "RelSpeed",
+        "Total_Spin": "SpinRate",
+        "Total Spin": "SpinRate",
+        "VB__trajectory_": "InducedVertBreak",
+        "VB (trajectory)": "InducedVertBreak",
+        "HB__trajectory_": "HorzBreak",
+        "HB (trajectory)": "HorzBreak",
+        "Spin_Direction": "SpinAxis",
+        "Spin Direction": "SpinAxis",
+        "Release_Height": "RelHeight",
+        "Release Height": "RelHeight",
+        "Release_Side": "RelSide",
+        "Release Side": "RelSide",
+        "Release_Extension__ft_": "Extension",
+        "Release Extension (ft)": "Extension",
+        "Pitch_ID": "PitchNo",
+    }
+    # Keep existing constants-based mapping too.
+    df = df.rename(columns={**RAPSODO_COL_MAP, **rapsodo_bq_col_map})
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
 
     # Map pitch type names
     if "TaggedPitchType" in df.columns:
@@ -422,18 +376,43 @@ def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
     # Parse date
     df["Date"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
 
-    # Add pitcher info — map to Trackman PitcherId for consistency
-    # Convert "Emma Bailey" → "Bailey, Emma" to match Trackman format
-    name_parts = player_name.strip().split()
-    if len(name_parts) >= 2:
-        pitcher_name = f"{name_parts[-1]}, {' '.join(name_parts[:-1])}"
+    if "PitcherId" in df.columns:
+        df["PitcherId"] = (
+            df["PitcherId"]
+            .astype(str)
+            .str.strip()
+            .map(lambda pid: RAPSODO_TO_TRACKMAN_ID.get(pid, pid))
+        )
+    elif "Player ID" in df.columns:
+        df["PitcherId"] = (
+            df["Player ID"]
+            .astype(str)
+            .str.strip()
+            .map(lambda pid: RAPSODO_TO_TRACKMAN_ID.get(pid, pid))
+        )
+    elif "Player_ID" in df.columns:
+        df["PitcherId"] = (
+            df["Player_ID"]
+            .astype(str)
+            .str.strip()
+            .map(lambda pid: RAPSODO_TO_TRACKMAN_ID.get(pid, pid))
+        )
+
+    # Some Rapsodo exports land without pitcher identity; keep rows usable.
+    if "Pitcher" not in df.columns:
+        df["Pitcher"] = "Rapsodo Bullpen"
     else:
-        pitcher_name = player_name
-    df["Pitcher"] = pitcher_name
-    trackman_id = RAPSODO_TO_TRACKMAN_ID.get(str(player_id).strip(), str(player_id))
-    df["PitcherId"] = trackman_id
+        p = df["Pitcher"].astype(str).str.strip()
+        df["Pitcher"] = p.where(p.ne("").fillna(False), "Rapsodo Bullpen")
+
+    if "PitcherId" not in df.columns:
+        df["PitcherId"] = "RAPSODO_BULLPEN"
+    else:
+        pid = df["PitcherId"].astype(str).str.strip()
+        df["PitcherId"] = pid.where(pid.ne("").fillna(False), "RAPSODO_BULLPEN")
     df["PitcherTeam"] = PURDUE_CODE
-    df["PitcherThrows"] = "Right"
+    if "PitcherThrows" not in df.columns:
+        df["PitcherThrows"] = "Right"
 
     # Mark as Rapsodo data
     df["DataSource"] = "rapsodo"
@@ -444,32 +423,59 @@ def load_rapsodo_csv(full_path: str) -> pd.DataFrame | None:
     keep += [c for c in extra if c in df.columns and c not in keep]
     df = df[keep].copy()
 
-    return df
-
-
-# ---------------------------------------------------------------------------
-# HitTrax data (session-aggregated batter data)
-# ---------------------------------------------------------------------------
-# Map HitTrax filename stem → Trackman-format player name
-
-def load_hittrax_csv(full_path: str) -> pd.DataFrame | None:
-    try:
-        df = pd.read_csv(full_path)
-    except Exception:
-        return None
+    df = df[df["Date"].notna()].copy()
     if df.empty:
-        return None
+        return pd.DataFrame()
+    df["DateOnly"] = df["Date"].dt.date
+    df["SessionType"] = "bullpen"
+    df["SessionTypeReason"] = "Rapsodo bullpen data"
+    return df.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# HitTrax data (session-aggregated batter data) from BigQuery
+# ---------------------------------------------------------------------------
+def clean_hittrax_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
 
     # Strip leading/trailing whitespace from column names
     df.columns = [c.strip() for c in df.columns]
+    # Normalize BigQuery underscore-style HitTrax columns.
+    hittrax_bq_col_map = {
+        "_AB": "AB",
+        "_H": "H",
+        "_EBH": "EBH",
+        "_HR": "HR",
+        "_HHA": "HHA",
+        "_AVG": "AVG",
+        "_SLG": "SLG",
+        "_LPH": "LPH",
+        "_Points": "Points",
+        "_LD__": "LD %",
+        "_FB__": "FB %",
+        "_GB__": "GB %",
+        "_AvgV": "AvgV",
+        "_MaxV": "MaxV",
+        "_Dist": "Dist",
+        "_Tag": "Tag",
+        "_Time": "Time",
+        # Current warehouse schema already strips symbols from column names.
+        "LD": "LD %",
+        "FB": "FB %",
+        "GB": "GB %",
+    }
+    df = df.rename(columns=hittrax_bq_col_map)
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
 
     # Parse date
     if "Date" not in df.columns:
-        return None
+        return pd.DataFrame()
     df["Date"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
     df = df[df["Date"].notna()].copy()
     if df.empty:
-        return None
+        return pd.DataFrame()
 
     # Coerce numeric columns
     numeric_cols = ["AB", "H", "EBH", "HR", "Points", "LD %", "FB %", "GB %",
@@ -483,33 +489,87 @@ def load_hittrax_csv(full_path: str) -> pd.DataFrame | None:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Player name from filename stem
-    stem = os.path.splitext(os.path.basename(full_path))[0]
-    player_name = HITTRAX_NAME_MAP.get(stem, stem.replace("_", ", "))
-    df["Player"] = player_name
+    # Player name from mapped key column when present.
+    if "Player" not in df.columns:
+        for name_key in ("PlayerKey", "Player File", "PlayerFile", "Filename", "FileName"):
+            if name_key in df.columns:
+                df["Player"] = (
+                    df[name_key]
+                    .astype(str)
+                    .str.strip()
+                    .map(lambda stem: HITTRAX_NAME_MAP.get(stem, stem.replace("_", ", ")))
+                )
+                break
+    if "Player" not in df.columns:
+        if "BatterId" in df.columns:
+            # Fall back to batter id when names are unavailable.
+            df["Player"] = df["BatterId"].astype(str).str.strip()
+        elif "Tag" in df.columns:
+            df["Player"] = df["Tag"].astype(str).str.strip()
+        else:
+            df["Player"] = ""
+    # Ensure non-empty player labels so UI select choices are usable.
+    p = df["Player"].astype(str).str.strip()
+    df["Player"] = p.where(p.ne("").fillna(False), "HitTrax Session")
+
+    if "BatterId" not in df.columns:
+        df["BatterId"] = df["Player"].astype(str)
+    else:
+        bid = df["BatterId"].astype(str).str.strip()
+        df["BatterId"] = bid.where(bid.ne("").fillna(False), df["Player"].astype(str))
     df["BatterTeam"] = PURDUE_CODE
     df["DataSource"] = "hittrax"
     df["DateOnly"] = df["Date"].dt.date
 
-    return df
+    return df.reset_index(drop=True)
 
 
-def build_hittrax_df():
-    hittrax_dir = os.path.join(APP_DIR, "data", "hittrax")
-    if not os.path.isdir(hittrax_dir):
+def fetch_trackman_df() -> pd.DataFrame:
+    # Prefer curated table only when it contains required analytics fields.
+    curated_sql = "SELECT * FROM `softball-493201.cur_softball.cur_pitch_unified`"
+    curated_raw = _query_to_df(curated_sql)
+    if _has_required_trackman_columns(curated_raw):
+        curated = clean_trackman_df(curated_raw)
+        if not curated.empty:
+            print("Trackman source: cur_pitch_unified (schema ok)")
+            return curated
+        print("Trackman source: cur_pitch_unified unusable after cleaning; trying staging")
+    else:
+        print("Trackman source: cur_pitch_unified missing required columns; using staging fallback")
+
+    # Pull only columns the app uses to reduce startup/query time.
+    select_cols = ", ".join(f"`{c}`" for c in COLUMNS_TO_KEEP)
+    fallback_sql = (
+        "SELECT "
+        + select_cols
+        + " FROM `softball-493201.stg_softball.stg_trackman`"
+    )
+    fallback_raw = _query_to_df(fallback_sql)
+    if not _has_required_trackman_columns(fallback_raw):
+        print("Trackman source: stg_trackman also missing required columns")
+    fallback = clean_trackman_df(fallback_raw)
+    print(f"Trackman source: stg_trackman rows={len(fallback)}")
+    return fallback
+
+
+def fetch_rapsodo_df() -> pd.DataFrame:
+    sql = "SELECT * FROM `softball-493201.stg_softball.stg_rapsodo`"
+    return clean_rapsodo_df(_query_to_df(sql))
+
+
+def fetch_hittrax_df() -> pd.DataFrame:
+    sql = "SELECT * FROM `softball-493201.stg_softball.stg_hittrax`"
+    return clean_hittrax_df(_query_to_df(sql))
+
+
+def build_hittrax_df() -> pd.DataFrame:
+    df = fetch_hittrax_df()
+    if df is None or df.empty:
         return pd.DataFrame()
-    dfs = []
-    for fname in sorted(glob.glob(os.path.join(hittrax_dir, "*.csv"))):
-        df = load_hittrax_csv(fname)
-        if df is None or df.empty:
-            continue
-        dfs.append(df)
-    if not dfs:
-        return pd.DataFrame()
-    return pd.concat(dfs, ignore_index=True)
+    return df.reset_index(drop=True)
 
 
-HITTRAX_DF = build_hittrax_df()
+HITTRAX_DF = pd.DataFrame()
 
 
 
@@ -1082,142 +1142,197 @@ def get_pitcher_team_logo_text(team_code: str) -> str:
     return "O"
 
 # ---------------------------------------------------------------------------
-# Load csv metadata once
+# Data loading from BigQuery
 # ---------------------------------------------------------------------------
-csv_paths_with_dates, global_date_min, global_date_max = get_csv_paths_with_dates()
+TRACKMAN_DF = pd.DataFrame()
+RAPSODO_DF = pd.DataFrame()
+MASTER_DF = pd.DataFrame()
+_LOADED_SOURCES: set[str] = set()
+RANGE_CACHE: dict[tuple[str, str, str], pd.DataFrame] = {}
 
-# ---------------------------------------------------------------------------
-# Data-freshness stats (shown in sidebar so coaches know the data horizon).
-# ---------------------------------------------------------------------------
-def _compute_freshness_stats(rows):
-    total_games = len(rows)
-    unverified = sum(
-        1 for _, full, _, _ in rows
-        if "_unverified" in os.path.basename(full).lower()
-    )
-    verified = total_games - unverified
-    latest = max((dmax for _, _, _, dmax in rows), default=None)
-    return {
-        "latest_date": latest,
-        "total_games": total_games,
-        "verified": verified,
-        "unverified": unverified,
-    }
-
-FRESHNESS_STATS = _compute_freshness_stats(csv_paths_with_dates)
+# Exclude Trackman test/demo data
+EXCLUDE_TEAMS = {"TRA_TRA_SB", "TRA_TRA1_SB"}
 
 
-def _build_master_df_from_csvs():
-    """Read every Trackman + Rapsodo CSV and concatenate. Slow path."""
-    dfs = []
+def _query_bounds(sql: str) -> tuple[date | None, date | None]:
+    df = _query_to_df(sql)
+    if df is None or df.empty:
+        return None, None
+    mn = pd.to_datetime(df.iloc[0].get("min_d"), errors="coerce")
+    mx = pd.to_datetime(df.iloc[0].get("max_d"), errors="coerce")
+    return (mn.date() if pd.notna(mn) else None, mx.date() if pd.notna(mx) else None)
 
-    # Load Trackman data
-    for rel, full, dmin, dmax in csv_paths_with_dates:
-        df = load_and_clean_csv(full)
-        if df is None or df.empty or "Date" not in df.columns:
-            continue
 
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df[df["Date"].notna()].copy()
-        if df.empty:
-            continue
+def _date_sql(d: date) -> str:
+    return d.isoformat()
 
-        df["DateOnly"] = df["Date"].dt.date
-        df["DataSource"] = "trackman"
-        df = infer_session_type_for_purdue(df, filename=rel)
 
-        dfs.append(df)
+def _cached_source_range_df(src: str, start: date, end: date) -> pd.DataFrame:
+    key = (src, _date_sql(start), _date_sql(end))
+    if key in RANGE_CACHE:
+        return RANGE_CACHE[key]
 
-    # Load Rapsodo data
-    rapsodo_dir = os.path.join(APP_DIR, "data", "rapsodo")
-    if os.path.isdir(rapsodo_dir):
-        for fname in glob.glob(os.path.join(rapsodo_dir, "*.csv")):
-            df = load_rapsodo_csv(fname)
-            if df is None or df.empty or "Date" not in df.columns:
-                continue
-            df = df[df["Date"].notna()].copy()
-            if df.empty:
-                continue
-            df["DateOnly"] = df["Date"].dt.date
-            df["SessionType"] = "bullpen"
-            df["SessionTypeReason"] = "Rapsodo bullpen data"
-            dfs.append(df)
+    if src == "trackman":
+        select_cols = ", ".join(f"`{c}`" for c in COLUMNS_TO_KEEP)
+        sql = (
+            "SELECT "
+            + select_cols
+            + " FROM `softball-493201.stg_softball.stg_trackman` "
+            + f"WHERE SAFE_CAST(Date AS DATE) BETWEEN DATE '{_date_sql(start)}' AND DATE '{_date_sql(end)}'"
+        )
+        df = clean_trackman_df(_query_to_df(sql))
+    elif src == "rapsodo":
+        sql = (
+            "SELECT * FROM `softball-493201.stg_softball.stg_rapsodo` "
+            + "WHERE DATE(SAFE.PARSE_DATETIME('%a %b %d %Y %I:%M:%S %p', Date)) "
+            + f"BETWEEN DATE '{_date_sql(start)}' AND DATE '{_date_sql(end)}'"
+        )
+        df = clean_rapsodo_df(_query_to_df(sql))
+    elif src == "hittrax":
+        sql = (
+            "SELECT * FROM `softball-493201.stg_softball.stg_hittrax` "
+            + "WHERE COALESCE(SAFE.PARSE_DATE('%m/%d/%Y', Date), SAFE_CAST(Date AS DATE)) "
+            + f"BETWEEN DATE '{_date_sql(start)}' AND DATE '{_date_sql(end)}'"
+        )
+        df = clean_hittrax_df(_query_to_df(sql))
+    elif src == "collective":
+        t = _cached_source_range_df("trackman", start, end)
+        r = _cached_source_range_df("rapsodo", start, end)
+        parts = [x for x in (t, r) if x is not None and not x.empty]
+        df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    else:
+        df = pd.DataFrame()
 
-    if not dfs:
-        return pd.DataFrame()
+    if src in ("trackman", "rapsodo", "collective"):
+        for col in ["PitcherTeam", "BatterTeam"]:
+            if col in df.columns:
+                df = df[~df[col].astype(str).str.strip().isin(EXCLUDE_TEAMS)]
+        df = df.reset_index(drop=True)
 
-    master = pd.concat(dfs, ignore_index=True)
+    RANGE_CACHE[key] = df
+    return df
 
-    # Exclude Trackman test/demo data
-    EXCLUDE_TEAMS = {"TRA_TRA_SB", "TRA_TRA1_SB"}
+
+def _source_has_data_in_range(src: str, start: date, end: date) -> bool:
+    if src == "collective":
+        return _source_has_data_in_range("trackman", start, end) or _source_has_data_in_range("rapsodo", start, end)
+    if src == "trackman":
+        sql = (
+            "SELECT COUNT(1) AS n FROM `softball-493201.stg_softball.stg_trackman` "
+            + f"WHERE SAFE_CAST(Date AS DATE) BETWEEN DATE '{_date_sql(start)}' AND DATE '{_date_sql(end)}'"
+        )
+    elif src == "rapsodo":
+        sql = (
+            "SELECT COUNT(1) AS n FROM `softball-493201.stg_softball.stg_rapsodo` "
+            + "WHERE DATE(SAFE.PARSE_DATETIME('%a %b %d %Y %I:%M:%S %p', Date)) "
+            + f"BETWEEN DATE '{_date_sql(start)}' AND DATE '{_date_sql(end)}'"
+        )
+    elif src == "hittrax":
+        sql = (
+            "SELECT COUNT(1) AS n FROM `softball-493201.stg_softball.stg_hittrax` "
+            + "WHERE COALESCE(SAFE.PARSE_DATE('%m/%d/%Y', Date), SAFE_CAST(Date AS DATE)) "
+            + f"BETWEEN DATE '{_date_sql(start)}' AND DATE '{_date_sql(end)}'"
+        )
+    else:
+        return False
+    out = _query_to_df(sql)
+    if out is None or out.empty or "n" not in out.columns:
+        return False
+    try:
+        return int(out.iloc[0]["n"]) > 0
+    except Exception:
+        return False
+
+def _date_bounds(df: pd.DataFrame) -> tuple[date | None, date | None]:
+    if df is None or df.empty or "DateOnly" not in df.columns:
+        return None, None
+    _dates = pd.to_datetime(df["DateOnly"], errors="coerce").dropna()
+    if _dates.empty:
+        return None, None
+    return _dates.min().date(), _dates.max().date()
+
+
+def _rebuild_master_and_slices() -> None:
+    global MASTER_DF, SOURCE_SLICES
+    parts = []
+    if TRACKMAN_DF is not None and not TRACKMAN_DF.empty:
+        parts.append(TRACKMAN_DF)
+    if RAPSODO_DF is not None and not RAPSODO_DF.empty:
+        parts.append(RAPSODO_DF)
+    MASTER_DF = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
     for col in ["PitcherTeam", "BatterTeam"]:
-        if col in master.columns:
-            master = master[~master[col].astype(str).str.strip().isin(EXCLUDE_TEAMS)]
-
-    return master
-
-
-# ---------------------------------------------------------------------------
-# MASTER_DF pickle cache — avoids re-parsing every CSV on each server restart.
-# Invalidates when any data folder's modification time changes (files added /
-# removed / replaced). Coaches can force a rebuild by deleting the cache file
-# or touching the v3/ folder.
-# ---------------------------------------------------------------------------
-MASTER_CACHE_PATH = os.path.join(APP_DIR, ".master_df_cache.pkl")
-MASTER_CACHE_META_PATH = os.path.join(APP_DIR, ".master_df_cache.meta.json")
+        if col in MASTER_DF.columns:
+            MASTER_DF = MASTER_DF[~MASTER_DF[col].astype(str).str.strip().isin(EXCLUDE_TEAMS)]
+    MASTER_DF = MASTER_DF.reset_index(drop=True)
+    SOURCE_SLICES = _build_source_slices(MASTER_DF)
 
 
-def _dir_mtime(path):
-    """Max mtime across a directory tree (cheap: top-level only, like _data_dir_mtime)."""
-    if not os.path.isdir(path):
-        return 0
-    try:
-        t = os.path.getmtime(path)
-        for e in os.listdir(path):
-            t = max(t, os.path.getmtime(os.path.join(path, e)))
-        return t
-    except Exception:
-        return 0
+def _ensure_source_loaded(src: str) -> None:
+    global TRACKMAN_DF, RAPSODO_DF, HITTRAX_DF
+
+    if src == "collective":
+        _ensure_source_loaded("trackman")
+        _ensure_source_loaded("rapsodo")
+        return
+
+    if src == "trackman" and src not in _LOADED_SOURCES:
+        _LOADED_SOURCES.add("trackman")
+        return
+
+    if src == "rapsodo" and src not in _LOADED_SOURCES:
+        _LOADED_SOURCES.add("rapsodo")
+        return
+
+    if src == "hittrax" and src not in _LOADED_SOURCES:
+        if HITTRAX_DF is None or HITTRAX_DF.empty:
+            HITTRAX_DF = fetch_hittrax_df()
+        _LOADED_SOURCES.add("hittrax")
 
 
-def _master_fingerprint():
-    """Signature that invalidates cache when any source folder changes."""
+TRACKMAN_DATE_MIN, TRACKMAN_DATE_MAX = _query_bounds(
+    "SELECT MIN(SAFE_CAST(Date AS DATE)) AS min_d, MAX(SAFE_CAST(Date AS DATE)) AS max_d "
+    "FROM `softball-493201.stg_softball.stg_trackman`"
+)
+RAPSODO_DATE_MIN, RAPSODO_DATE_MAX = _query_bounds(
+    "SELECT "
+    "MIN(DATE(SAFE.PARSE_DATETIME('%a %b %d %Y %I:%M:%S %p', Date))) AS min_d, "
+    "MAX(DATE(SAFE.PARSE_DATETIME('%a %b %d %Y %I:%M:%S %p', Date))) AS max_d "
+    "FROM `softball-493201.stg_softball.stg_rapsodo`"
+)
+HITTRAX_DATE_MIN, HITTRAX_DATE_MAX = _query_bounds(
+    "SELECT "
+    "MIN(COALESCE(SAFE.PARSE_DATE('%m/%d/%Y', Date), SAFE_CAST(Date AS DATE))) AS min_d, "
+    "MAX(COALESCE(SAFE.PARSE_DATE('%m/%d/%Y', Date), SAFE_CAST(Date AS DATE))) AS max_d "
+    "FROM `softball-493201.stg_softball.stg_hittrax`"
+)
+MASTER_DATE_MIN = min([d for d in [TRACKMAN_DATE_MIN, RAPSODO_DATE_MIN] if d], default=None)
+MASTER_DATE_MAX = max([d for d in [TRACKMAN_DATE_MAX, RAPSODO_DATE_MAX] if d], default=None)
+
+# Sidebar defaults should follow the default data source (Trackman).
+# Fall back to master bounds only if Trackman is empty.
+global_date_min = TRACKMAN_DATE_MIN or MASTER_DATE_MIN
+global_date_max = TRACKMAN_DATE_MAX or MASTER_DATE_MAX
+
+
+def _compute_freshness_stats_from_master(master: pd.DataFrame) -> dict:
+    if master is None or master.empty or "DateOnly" not in master.columns:
+        latest = MASTER_DATE_MAX
+        return {
+            "latest_date": latest,
+            "total_games": 0,
+            "verified": 0,
+            "unverified": 0,
+        }
+    dates = pd.to_datetime(master["DateOnly"], errors="coerce").dropna()
     return {
-        "v3": _data_dir_mtime(),
-        "rapsodo": _dir_mtime(os.path.join(APP_DIR, "data", "rapsodo")),
-        "version": 1,  # bump if schema changes
+        "latest_date": (dates.max().date() if not dates.empty else None),
+        "total_games": int(len(dates.unique())),
+        "verified": int(len(dates.unique())),
+        "unverified": 0,
     }
 
 
-def build_master_df():
-    """Load MASTER_DF from pickle cache when possible; rebuild from CSVs otherwise."""
-    fp_now = _master_fingerprint()
-
-    # Try cache
-    if os.path.isfile(MASTER_CACHE_PATH) and os.path.isfile(MASTER_CACHE_META_PATH):
-        try:
-            with open(MASTER_CACHE_META_PATH, "r") as f:
-                fp_cached = json.load(f)
-            if fp_cached == fp_now:
-                return pd.read_pickle(MASTER_CACHE_PATH)
-        except Exception:
-            pass  # fall through to rebuild
-
-    # Cache miss or stale — rebuild
-    master = _build_master_df_from_csvs()
-
-    # Save cache (best effort; if it fails, app still works, next start just rebuilds)
-    try:
-        master.to_pickle(MASTER_CACHE_PATH)
-        with open(MASTER_CACHE_META_PATH, "w") as f:
-            json.dump(fp_now, f)
-    except Exception:
-        pass
-
-    return master
-
-
-MASTER_DF = build_master_df()
+FRESHNESS_STATS = _compute_freshness_stats_from_master(MASTER_DF)
 
 # Precompute per-source slices once at startup so current_df() doesn't have to
 # re-filter MASTER_DF by DataSource on every reactive invalidation.
@@ -1459,8 +1574,18 @@ app_ui = ui.page_fluid(
 
             ui.tags.div(
                 ui.tags.div("Date Range", class_="filter-title", style="margin-bottom: 6px;"),
-                ui.input_date("date_start", "", value=_date_start_value),
-                ui.input_date("date_end", "", value=_date_end_value),
+                ui.input_date(
+                    "date_start", "",
+                    value=_date_start_value,
+                    min=global_date_min,
+                    max=global_date_max,
+                ),
+                ui.input_date(
+                    "date_end", "",
+                    value=_date_end_value,
+                    min=global_date_min,
+                    max=global_date_max,
+                ),
                 class_="date-range-row",
             ),
 
@@ -1698,6 +1823,16 @@ def server(input, output, session):
     selected_hittrax_session = reactive.Value("")  # ISO date string of selected session, or ""
     updating_dates_from_season = reactive.Value(False)
 
+    def _source_date_bounds():
+        src = input.data_source()
+        if src == "trackman":
+            return TRACKMAN_DATE_MIN, TRACKMAN_DATE_MAX
+        if src == "rapsodo":
+            return RAPSODO_DATE_MIN, RAPSODO_DATE_MAX
+        if src == "hittrax":
+            return HITTRAX_DATE_MIN, HITTRAX_DATE_MAX
+        return MASTER_DATE_MIN, MASTER_DATE_MAX
+
     @reactive.calc
     def date_range_invalid():
         start, end = input.date_start(), input.date_end()
@@ -1708,34 +1843,32 @@ def server(input, output, session):
         start = input.date_start()
         end = input.date_end()
 
-        if start is None or end is None or not csv_paths_with_dates:
+        if start is None or end is None:
             return False
         if start > end:
             return False
-
-        for _, _, dmin, dmax in csv_paths_with_dates:
-            if dmin <= end and dmax >= start:
-                return True
-        return False
+        src = input.data_source()
+        return _source_has_data_in_range(src, start, end)
 
     @reactive.effect
     def _update_dates_from_season():
         season = input.season_choice()
+        src_min, src_max = _source_date_bounds()
 
-        if global_date_min is None or global_date_max is None:
+        if src_min is None or src_max is None:
             return
 
         if season == "custom":
             return
 
         if season == "all":
-            start, end = global_date_min, global_date_max
+            start, end = src_min, src_max
         else:
             season_start, season_end = SEASON_DATE_MAP.get(
-                season, (global_date_min, global_date_max)
+                season, (src_min, src_max)
             )
             start, end = clamp_date_range(
-                season_start, season_end, global_date_min, global_date_max
+                season_start, season_end, src_min, src_max
             )
 
         updating_dates_from_season.set(True)
@@ -1756,25 +1889,26 @@ def server(input, output, session):
     def _update_date_bounds():
         start = input.date_start()
         end = input.date_end()
+        src_min, src_max = _source_date_bounds()
 
         if updating_dates_from_season.get():
             return
 
-        if global_date_min is None or global_date_max is None:
+        if src_min is None or src_max is None:
             return
         if start is None or end is None:
             return
 
         ui.update_date(
             "date_start",
-            min=global_date_min,
+            min=src_min,
             max=end,
             session=session,
         )
         ui.update_date(
             "date_end",
             min=start,
-            max=global_date_max,
+            max=src_max,
             session=session,
         )
 
@@ -1783,6 +1917,7 @@ def server(input, output, session):
         start = input.date_start()
         end = input.date_end()
         season = input.season_choice()
+        src_min, src_max = _source_date_bounds()
 
         if start is None or end is None:
             return
@@ -1792,15 +1927,22 @@ def server(input, output, session):
 
         if season == "custom":
             return
+        # Keep explicit "All Data" selection sticky. Without this guard,
+        # transient date-input update ordering can bounce the selector back.
+        if season == "all":
+            return
+
+        if src_min is None or src_max is None:
+            return
 
         if season == "all":
-            expected_start, expected_end = global_date_min, global_date_max
+            expected_start, expected_end = src_min, src_max
         else:
             season_start, season_end = SEASON_DATE_MAP.get(
-                season, (global_date_min, global_date_max)
+                season, (src_min, src_max)
             )
             expected_start, expected_end = clamp_date_range(
-                season_start, season_end, global_date_min, global_date_max
+                season_start, season_end, src_min, src_max
             )
 
         if expected_start is None or expected_end is None:
@@ -1839,27 +1981,17 @@ def server(input, output, session):
     def current_df():
         start = input.date_start()
         end = input.date_end()
+        src = input.data_source()
 
         if start is None or end is None:
             return None
         if start > end:
             return None
-        if MASTER_DF.empty:
-            return None
 
-        # Use pre-filtered source slice so we only pay the date-range filter cost
-        src = input.data_source()
-        base = SOURCE_SLICES.get(src, MASTER_DF) if src in SOURCE_SLICES else MASTER_DF
-
-        if base is None or base.empty:
-            return base
-
-        df = base[
-            (base["DateOnly"] >= start) &
-            (base["DateOnly"] <= end)
-        ]
-
-        return df
+        df = _cached_source_range_df(src, start, end)
+        if df is None or df.empty:
+            return df
+        return df[(df["DateOnly"] >= start) & (df["DateOnly"] <= end)]
 
     @reactive.effect
     def _warn_unsupported_source():
@@ -1917,6 +2049,10 @@ def server(input, output, session):
 
         df = current_df()
         if df is None or df.empty:
+            src_min, src_max = _source_date_bounds()
+            if src_min is not None and src_max is not None:
+                df = _cached_source_range_df(src, src_min, src_max)
+        if df is None or df.empty:
             ui.update_selectize("team", choices={}, session=session)
             return
 
@@ -1948,15 +2084,16 @@ def server(input, output, session):
     def _update_player_choices():
         src = input.data_source()
         if src == "hittrax":
-            # HitTrax: populate from HITTRAX_DF by player name (used as id)
-            if HITTRAX_DF.empty:
-                ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
-                return
+            # HitTrax: populate from current date range query cache.
             start = input.date_start()
             end = input.date_end()
-            hdf = HITTRAX_DF
-            if start is not None and end is not None:
-                hdf = hdf[(hdf["DateOnly"] >= start) & (hdf["DateOnly"] <= end)]
+            if start is None or end is None:
+                ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
+                return
+            hdf = _cached_source_range_df("hittrax", start, end)
+            if hdf is None or hdf.empty:
+                ui.update_select("player", choices={"": "—"}, label="Player Name", session=session)
+                return
             names = sorted(hdf["Player"].dropna().unique().tolist())
             choices = {n: format_display_name(n) or n for n in names}
             ui.update_select(
@@ -1969,6 +2106,10 @@ def server(input, output, session):
             return
 
         df = current_df()
+        if df is None or df.empty:
+            src_min, src_max = _source_date_bounds()
+            if src_min is not None and src_max is not None:
+                df = _cached_source_range_df(src, src_min, src_max)
         team = input.team()
         ptype = input.player_type()
 
@@ -2408,12 +2549,9 @@ def server(input, output, session):
         data = pitcher_data()
         if data is None or data.empty:
             return empty_st
-        league = SOURCE_SLICES.get("trackman")
+        league = _cached_source_range_df("trackman", input.date_start(), input.date_end())
         if league is None or league.empty:
-            if MASTER_DF is not None and not MASTER_DF.empty and "DataSource" in MASTER_DF.columns:
-                league = MASTER_DF[MASTER_DF["DataSource"].astype(str) == "trackman"].reset_index(drop=True)
-            else:
-                league = MASTER_DF
+            league = data
         desc = build_prediction_by_pitch_type(data)
         return prediction_pipeline.compute_ml_prediction_bundle(
             pitcher_df=data,
@@ -7290,8 +7428,6 @@ def server(input, output, session):
     @reactive.calc
     def hittrax_data():
         """Filtered HitTrax rows for the selected player + date range."""
-        if HITTRAX_DF.empty:
-            return None
         player = input.player()
         if not player:
             return None
@@ -7300,11 +7436,10 @@ def server(input, output, session):
         if start is None or end is None:
             return None
 
-        d = HITTRAX_DF[
-            (HITTRAX_DF["Player"] == player)
-            & (HITTRAX_DF["DateOnly"] >= start)
-            & (HITTRAX_DF["DateOnly"] <= end)
-        ].copy()
+        d = _cached_source_range_df("hittrax", start, end)
+        if d is None or d.empty:
+            return None
+        d = d[(d["Player"] == player) & (d["DateOnly"] >= start) & (d["DateOnly"] <= end)].copy()
         if d.empty:
             return None
         d = d.sort_values("Date").reset_index(drop=True)
