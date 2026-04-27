@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.git/
+.DS_Store
+rsconnect-python/
+
+# Local raw data not needed in container since app reads BigQuery
+data/
